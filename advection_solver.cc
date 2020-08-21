@@ -1,3 +1,6 @@
+// This file is part of the advection_miniapp repository and subject to the
+// LGPL license. See the LICENSE file in the top level directory of this
+// project for details.
 
 // Program for explicit time integration of the advection problem
 // Author: Martin Kronbichler, Technical University of Munich, 2014-2020
