@@ -31,7 +31,6 @@
 #include <deal.II/grid/tria.h>
 
 #include <deal.II/lac/affine_constraints.h>
-#include <deal.II/lac/la_parallel_block_vector.h>
 #include <deal.II/lac/la_parallel_vector.h>
 #include <deal.II/lac/lapack_full_matrix.h>
 
@@ -55,8 +54,7 @@ namespace DGAdvection
   using namespace dealii;
 
   // The dimension can be selected to be 1, 2, 3 (it is a C++ template
-  // argument, so different code gets compiled in 1D/2D/3D); for the advection
-  // speed of a rotating vortex that is set here, only dimension 2 works
+  // argument, so different code gets compiled in 1D/2D/3D)
   const unsigned int dimension = 2;
 
   // The polynomial degree can be selected between 0 and any reasonable number
