@@ -3,6 +3,7 @@ CMakeFiles/
 cmake_install.cmake
 CMakeCache.txt
 advection_solver
+advection_solver_variable
 *vtu
 Makefile
 
