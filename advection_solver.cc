@@ -763,7 +763,7 @@ namespace DGAdvection
     MatrixFreeOperators::CellwiseInverseMassMatrix<dim, fe_degree, 1, Number>
       inverse(phi);
     dst.zero_out_ghosts();
-    for (unsigned int cell = 0; cell < data.n_macro_cells(); ++cell)
+    for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
       {
         phi.reinit(cell);
         for (unsigned int q = 0; q < phi.n_q_points; ++q)
@@ -985,6 +985,8 @@ namespace DGAdvection
     else
 #endif
       triangulation = std::make_shared<Triangulation<dim>>();
+    
+    dof_handler.reinit(*triangulation);
   }
 
 
@@ -1127,7 +1129,7 @@ namespace DGAdvection
   void
   AdvectionProblem<dim>::setup_dofs()
   {
-    dof_handler.initialize(*triangulation, fe);
+    dof_handler.distribute_dofs(fe);
 
     if (time == 0.)
       {
