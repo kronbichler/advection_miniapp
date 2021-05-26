@@ -24,7 +24,6 @@
 #include <deal.II/fe/mapping_q_generic.h>
 
 #include <deal.II/grid/grid_generator.h>
-#include <deal.II/grid/grid_in.h>
 #include <deal.II/grid/grid_out.h>
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/grid/manifold_lib.h>
@@ -72,8 +71,8 @@ namespace DGAdvection
   // dt = courant_number * min_h / (transport_norm * fe_degree^1.5)
   const double courant_number = 0.5;
 
-  // 1: central flux, 0: classical upwind flux (= Lax-Friedrichs)
-  const double flux_alpha = 0.0;
+  // 0: central flux, 1: classical upwind flux (= Lax-Friedrichs)
+  const double flux_alpha = 1.0;
 
   // The final simulation time
   const double FINAL_TIME = 2.0;
@@ -550,7 +549,7 @@ namespace DGAdvection
             const auto normal_times_speed = speed * normal_vector_minus;
             const auto flux_times_normal_of_minus =
               0.5 * ((u_minus + u_plus) * normal_times_speed +
-                     (1.0 - flux_alpha) * std::abs(normal_times_speed) *
+                     flux_alpha * std::abs(normal_times_speed) *
                        (u_minus - u_plus));
 
             // We want to test 'flux_times_normal' by the test function, which
@@ -611,7 +610,7 @@ namespace DGAdvection
             const auto normal_times_speed = normal_vector * speed;
             const auto flux_times_normal =
               0.5 * ((u_minus + u_plus) * normal_times_speed +
-                     (1.0 - flux_alpha) * std::abs(normal_times_speed) *
+                     flux_alpha * std::abs(normal_times_speed) *
                        (u_minus - u_plus));
 
             // must use '-' sign because we move the advection terms to the
