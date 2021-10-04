@@ -984,6 +984,13 @@ namespace DGAdvection
     else
 #endif
       triangulation = std::make_shared<Triangulation<dim>>();
+    
+#if DEAL_II_VERSION_GTE(9, 3, 0)
+    dof_handler.reinit(*triangulation);
+    dof_handler.distribute_dofs(fe);
+#else
+    dof_handler.initialize(*triangulation, fe);
+#endif
   }
 
 
@@ -1126,7 +1133,7 @@ namespace DGAdvection
   void
   AdvectionProblem<dim>::setup_dofs()
   {
-    dof_handler.initialize(*triangulation, fe);
+    dof_handler.distribute_dofs(fe);
 
     if (time == 0.)
       {
