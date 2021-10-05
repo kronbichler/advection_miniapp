@@ -241,7 +241,7 @@ namespace DGAdvection
     {}
 
     Point<dim>
-    push_forward(const Point<dim> &chart_point) const
+    push_forward(const Point<dim> &chart_point) const override
     {
       double sinval = deformation;
       for (unsigned int d = 0; d < dim; ++d)
@@ -254,7 +254,7 @@ namespace DGAdvection
     }
 
     Point<dim>
-    pull_back(const Point<dim> &space_point) const
+    pull_back(const Point<dim> &space_point) const override
     {
       Point<dim> x = space_point;
       Point<dim> one;
@@ -457,8 +457,8 @@ namespace DGAdvection
     AffineConstraints<double> dummy;
     dummy.close();
     data.reinit(mapping,
-                {{&dof_handler}},
-                std::vector<const AffineConstraints<double> *>{{&dummy}},
+                std::vector<const DoFHandler<dim> *>{&dof_handler},
+                std::vector<const AffineConstraints<double> *>{&dummy},
                 std::vector<Quadrature<1>>{{quadrature, quadrature_mass}},
                 additional_data);
   }
@@ -548,9 +548,9 @@ namespace DGAdvection
 
             const auto normal_times_speed = speed * normal_vector_minus;
             const auto flux_times_normal_of_minus =
-              0.5 * ((u_minus + u_plus) * normal_times_speed +
-                     flux_alpha * std::abs(normal_times_speed) *
-                       (u_minus - u_plus));
+              0.5 *
+              ((u_minus + u_plus) * normal_times_speed +
+               flux_alpha * std::abs(normal_times_speed) * (u_minus - u_plus));
 
             // We want to test 'flux_times_normal' by the test function, which
             // is called 'FEEvaluation::submit_value(). We need a minus sign
@@ -609,9 +609,9 @@ namespace DGAdvection
             // compute the flux
             const auto normal_times_speed = normal_vector * speed;
             const auto flux_times_normal =
-              0.5 * ((u_minus + u_plus) * normal_times_speed +
-                     flux_alpha * std::abs(normal_times_speed) *
-                       (u_minus - u_plus));
+              0.5 *
+              ((u_minus + u_plus) * normal_times_speed +
+               flux_alpha * std::abs(normal_times_speed) * (u_minus - u_plus));
 
             // must use '-' sign because we move the advection terms to the
             // right hand side where we have a minus sign
@@ -761,7 +761,11 @@ namespace DGAdvection
     FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> phi(data);
     MatrixFreeOperators::CellwiseInverseMassMatrix<dim, fe_degree, 1, Number>
       inverse(phi);
+#if DEAL_II_VERSION_GTE(9, 3, 0)
+    dst.zero_out_ghost_values();
+#else
     dst.zero_out_ghosts();
+#endif
     for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
       {
         phi.reinit(cell);
@@ -984,7 +988,7 @@ namespace DGAdvection
     else
 #endif
       triangulation = std::make_shared<Triangulation<dim>>();
-    
+
 #if DEAL_II_VERSION_GTE(9, 3, 0)
     dof_handler.reinit(*triangulation);
     dof_handler.distribute_dofs(fe);
