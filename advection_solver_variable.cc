@@ -266,7 +266,7 @@ namespace DGAdvection
     }
 
     std::unique_ptr<Manifold<dim>>
-    clone() const override
+    clone() const
     {
       return std::make_unique<DeformedCubeManifold<dim>>(left,
                                                          right,
@@ -418,8 +418,8 @@ namespace DGAdvection
     AffineConstraints<double> dummy;
     dummy.close();
     data.reinit(mapping,
-                {{&dof_handler}},
-                std::vector<const AffineConstraints<double> *>{{&dummy}},
+                std::vector<const DoFHandler<dim> *>{&dof_handler},
+                std::vector<const AffineConstraints<double> *>{&dummy},
                 std::vector<Quadrature<1>>{{quadrature, quadrature_mass}},
                 additional_data);
 
@@ -742,7 +742,11 @@ namespace DGAdvection
     FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> phi(data);
     MatrixFreeOperators::CellwiseInverseMassMatrix<dim, fe_degree, 1, Number>
       inverse(phi);
+#if DEAL_II_VERSION_GTE(9, 3, 0)
+    dst.zero_out_ghost_values();
+#else
     dst.zero_out_ghosts();
+#endif
     for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
       {
         phi.reinit(cell);
@@ -1107,7 +1111,12 @@ namespace DGAdvection
   void
   AdvectionProblem<dim>::setup_dofs()
   {
+#if DEAL_II_VERSION_GTE(9, 3, 0)
+    dof_handler.reinit(*triangulation);
+    dof_handler.distribute_dofs(fe);
+#else
     dof_handler.initialize(*triangulation, fe);
+#endif
 
     if (time == 0.)
       {
