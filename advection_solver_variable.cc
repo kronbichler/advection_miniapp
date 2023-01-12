@@ -66,13 +66,13 @@ namespace DGAdvection
 
   // The polynomial degree can be selected between 0 and any reasonable number
   // (around 30), depending on the dimension and the mesh size
-  const unsigned int fe_degree = 5;
+  const unsigned int fe_degree = 4;
 
   // This parameter controls the mesh size by the number the initial mesh
   // (consisting of a single line/square/cube) is refined by doubling the
   // number of elements for every increase in number. Thus, the number of
   // elements is given by 2^(dim * n_global_refinements)
-  const unsigned int n_global_refinements = 7;
+  const unsigned int n_global_refinements = 8;
 
   // The time step size is controlled via this parameter as
   // dt = courant_number * min_h / (transport_norm * fe_degree^1.5)
@@ -474,7 +474,9 @@ namespace DGAdvection
         eval.reinit(cell);
 
         // compute u^h(x) from src
-        eval.gather_evaluate(src, true, true);
+        eval.gather_evaluate(src,
+                             EvaluationFlags::values |
+                               EvaluationFlags::gradients);
 
         // loop over quadrature points and compute the local volume flux
         for (unsigned int q = 0; q < eval.n_q_points; ++q)
@@ -488,7 +490,9 @@ namespace DGAdvection
           }
 
         // multiply by nabla v^h(x) and sum
-        eval.integrate_scatter(true, true, dst);
+        eval.integrate_scatter(EvaluationFlags::values |
+                                 EvaluationFlags::gradients,
+                               dst);
       }
   }
 
@@ -517,9 +521,9 @@ namespace DGAdvection
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
         eval_minus.reinit(face);
-        eval_minus.gather_evaluate(src, true, false);
+        eval_minus.gather_evaluate(src, EvaluationFlags::values);
         eval_plus.reinit(face);
-        eval_plus.gather_evaluate(src, true, false);
+        eval_plus.gather_evaluate(src, EvaluationFlags::values);
 
         for (unsigned int q = 0; q < eval_minus.n_q_points; ++q)
           {
@@ -530,9 +534,9 @@ namespace DGAdvection
 
             const auto normal_times_speed = speed * normal_vector_minus;
             const auto flux_times_normal_of_minus =
-              0.5 * ((u_minus + u_plus) * normal_times_speed +
-                     flux_alpha * std::abs(normal_times_speed) *
-                       (u_minus - u_plus));
+              0.5 *
+              ((u_minus + u_plus) * normal_times_speed +
+               flux_alpha * std::abs(normal_times_speed) * (u_minus - u_plus));
 
             // We want to test 'flux_times_normal' by the test function, which
             // is called 'FEEvaluation::submit_value(). We need a minus sign
@@ -551,8 +555,8 @@ namespace DGAdvection
                                    q);
           }
 
-        eval_minus.integrate_scatter(true, false, dst);
-        eval_plus.integrate_scatter(true, false, dst);
+        eval_minus.integrate_scatter(EvaluationFlags::values, dst);
+        eval_plus.integrate_scatter(EvaluationFlags::values, dst);
       }
   }
 
@@ -575,7 +579,7 @@ namespace DGAdvection
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
         eval_minus.reinit(face);
-        eval_minus.gather_evaluate(src, true, false);
+        eval_minus.gather_evaluate(src, EvaluationFlags::values);
 
         for (unsigned int q = 0; q < eval_minus.n_q_points; ++q)
           {
@@ -590,9 +594,9 @@ namespace DGAdvection
             // compute the flux
             const auto normal_times_speed = normal_vector * speed;
             const auto flux_times_normal =
-              0.5 * ((u_minus + u_plus) * normal_times_speed +
-                     flux_alpha * std::abs(normal_times_speed) *
-                       (u_minus - u_plus));
+              0.5 *
+              ((u_minus + u_plus) * normal_times_speed +
+               flux_alpha * std::abs(normal_times_speed) * (u_minus - u_plus));
 
             // must use '-' sign because we move the advection terms to the
             // right hand side where we have a minus sign
@@ -602,7 +606,7 @@ namespace DGAdvection
                                     q);
           }
 
-        eval_minus.integrate_scatter(true, false, dst);
+        eval_minus.integrate_scatter(EvaluationFlags::values, dst);
       }
   }
 
@@ -760,6 +764,7 @@ namespace DGAdvection
   }
 
 
+
   template <int dim, int fe_degree>
   Tensor<1, 3>
   AdvectionOperation<dim, fe_degree>::compute_mass_and_energy(
@@ -770,7 +775,9 @@ namespace DGAdvection
     for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
       {
         phi.reinit(cell);
-        phi.gather_evaluate(vec, true, true);
+        phi.gather_evaluate(vec,
+                            EvaluationFlags::values |
+                              EvaluationFlags::gradients);
         VectorizedArray<Number> mass   = {};
         VectorizedArray<Number> energy = {};
         VectorizedArray<Number> H1semi = {};
@@ -1104,8 +1111,6 @@ namespace DGAdvection
     pcout << "   Number of elements:            "
           << triangulation->n_global_active_cells() << std::endl;
   }
-
-
 
   template <int dim>
   void
