@@ -71,13 +71,7 @@ namespace DGAdvection
 
   // The polynomial degree can be selected between 0 and any reasonable number
   // (around 30), depending on the dimension and the mesh size
-  const unsigned int fe_degree = 4;
-
-  // This parameter controls the mesh size by the number the initial mesh
-  // (consisting of a single line/square/cube) is refined by doubling the
-  // number of elements for every increase in number. Thus, the number of
-  // elements is given by 2^(dim * n_global_refinements)
-  const unsigned int n_global_refinements = 7;
+  const unsigned int fe_degree = 5;
 
   // The time step size is controlled via this parameter as
   // dt = courant_number * min_h / (transport_norm * fe_degree^1.5)
@@ -145,8 +139,10 @@ namespace DGAdvection
     Number
     value(const Point<dim, Number> &p) const
     {
-      return std::exp(
-        -400. * ((p[0] - 0.5) * (p[0] - 0.5) + (p[1] - 0.75) * (p[1] - 0.75)));
+      return std::exp(-400. * ((p[0] - 0.5) * (p[0] - 0.5) +
+                               (p[1] - 0.75) * (p[1] - 0.75))) +
+             std::exp(-100. * ((p[0] - 0.5) * (p[0] - 0.5) +
+                               (p[1] - 0.25) * (p[1] - 0.25)));
     }
   };
 
@@ -167,10 +163,16 @@ namespace DGAdvection
       const double factor = std::cos(numbers::PI * time / FINAL_TIME) * 2.;
       Tensor<1, dim, Number> result;
 
-      result[0] = factor * std::sin(2 * numbers::PI * p[1]) *
-                  std::sin(numbers::PI * p[0]) * std::sin(numbers::PI * p[0]);
-      result[1] = -factor * std::sin(2 * numbers::PI * p[0]) *
-                  std::sin(numbers::PI * p[1]) * std::sin(numbers::PI * p[1]);
+      result[0] = factor * (std::sin(2 * numbers::PI * p[1]) *
+                              std::sin(numbers::PI * p[0]) *
+                              std::sin(numbers::PI * p[0]) +
+                            0.2 * std::sin(20 * numbers::PI * (p[0] + 0.2)) *
+                              std::cos(20 * numbers::PI * (p[1] + 0.3)));
+      result[1] = -factor * (std::sin(2 * numbers::PI * p[0]) *
+                               std::sin(numbers::PI * p[1]) *
+                               std::sin(numbers::PI * p[1]) +
+                             0.2 * std::cos(20 * numbers::PI * (p[0] + 0.2)) *
+                               std::sin(20 * numbers::PI * (p[1] + 0.3)));
       return result;
     }
 
@@ -1087,16 +1089,19 @@ namespace DGAdvection
     static constexpr unsigned int n = fe_degree + 1;
     using vcomplex                  = std::complex<VectorizedArray<Number>>;
 
-    CellwisePreconditionerFDM(
+    CellwisePreconditionerFDM(const IRK &irk)
+      : irk(irk)
+    {}
+
+    void
+    reinit(
       const std::array<LAPACKFullMatrix<std::complex<double>>, 2> &eigenvectors,
       const std::array<LAPACKFullMatrix<std::complex<double>>, 2>
         &inverse_eigenvectors,
       const std::array<std::vector<std::complex<double>>, 2> &eigenvalues,
       const VectorizedArray<Number>                  inv_jacobian_determinant,
       const Tensor<1, dim, VectorizedArray<Number>> &average_velocity,
-      const double                                   inv_dt,
-      const IRK &                                    irk)
-      : irk(irk)
+      const double                                   inv_dt)
     {
       Tensor<1, dim, VectorizedArray<Number>> blend_factor_eig;
       for (unsigned int d = 0; d < dim; ++d)
@@ -1106,51 +1111,62 @@ namespace DGAdvection
           else
             blend_factor_eig[d][v] = 0.0;
 
+      std::array<VectorizedArray<Number>, 2 * n> tmp_eig_x;
+      for (unsigned int i0 = 0; i0 < n; ++i0)
+        {
+          tmp_eig_x[2 * i0] =
+            average_velocity[0] *
+            ((1.0 - blend_factor_eig[0]) * eigenvalues[0][i0].real() +
+             blend_factor_eig[0] * eigenvalues[1][i0].real());
+          tmp_eig_x[2 * i0 + 1] =
+            average_velocity[0] *
+            ((1.0 - blend_factor_eig[0]) * eigenvalues[0][i0].imag() +
+             blend_factor_eig[0] * eigenvalues[1][i0].imag());
+        }
+      std::array<std::complex<Number>, n_stages> mass_contribution;
+      for (unsigned int s = 0; s < n_stages; ++s)
+        mass_contribution[s] = inv_dt * irk.eigenvalues[s];
       for (unsigned int i2 = 0, c = 0; i2 < (dim > 2 ? n : 1); ++i2)
         for (unsigned int i1 = 0; i1 < (dim > 1 ? n : 1); ++i1)
-          for (unsigned int i0 = 0; i0 < n; ++i0, ++c)
-            {
-              std::array<unsigned int, 3>           indices{i0, i1, i2};
-              std::complex<VectorizedArray<Number>> diagonal_element = {};
-              for (unsigned int d = 0; d < dim; ++d)
-                {
-                  std::complex<VectorizedArray<Number>> eig1(
-                    eigenvalues[0][indices[d]]),
-                    eig2(eigenvalues[1][indices[d]]);
-                  diagonal_element +=
-                    average_velocity[d] * ((1.0 - blend_factor_eig[d]) * eig1 +
-                                           blend_factor_eig[d] * eig2);
-                }
-              for (unsigned int s = 0; s < n_stages; ++s)
-                {
-                  std::complex<VectorizedArray<Number>> my_diag =
-                    diagonal_element;
-                  my_diag.real(my_diag.real() +
-                               inv_dt * irk.eigenvalues[s].real());
-                  my_diag.imag(my_diag.imag() +
-                               inv_dt * irk.eigenvalues[s].imag());
+          {
+            vcomplex                    diagonal_element_yz = {};
+            std::array<unsigned int, 2> indices{{i1, i2}};
+            for (unsigned int d = 1; d < dim; ++d)
+              {
+                std::complex<VectorizedArray<Number>> eig1(
+                  eigenvalues[0][indices[d - 1]]),
+                  eig2(eigenvalues[1][indices[d - 1]]);
+                diagonal_element_yz +=
+                  average_velocity[d] * ((1.0 - blend_factor_eig[d]) * eig1 +
+                                         blend_factor_eig[d] * eig2);
+              }
+            for (unsigned int i0 = 0; i0 < n; ++i0, ++c)
+              {
+                const vcomplex diagonal_element =
+                  diagonal_element_yz +
+                  vcomplex(tmp_eig_x[2 * i0], tmp_eig_x[2 * i0 + 1]);
+                for (unsigned int s = 0; s < n_stages; ++s)
                   inverse_eigenvalues_for_cell[s][c] =
-                    inv_jacobian_determinant / my_diag;
-                }
-            }
+                    inv_jacobian_determinant /
+                    (diagonal_element + vcomplex(mass_contribution[s]));
+              }
+          }
       for (unsigned int d = 0; d < dim; ++d)
         {
-          for (unsigned int i = 0, c = 0; i < n; ++i)
-            for (unsigned int j = 0; j < n; ++j, ++c)
+          for (unsigned int i = 0; i < n; ++i)
+            for (unsigned int j = 0; j < n; ++j)
               {
                 {
-                  const std::complex<VectorizedArray<Number>> eig1(
-                    eigenvectors[0](i, j)),
-                    eig2(eigenvectors[1](i, j));
-                  this->eigenvectors[d][c] =
+                  const vcomplex eig1(eigenvectors[0](j, i)),
+                    eig2(eigenvectors[1](j, i));
+                  this->eigenvectors[d][j * n + i] =
                     (1.0 - blend_factor_eig[d]) * eig1 +
                     blend_factor_eig[d] * eig2;
                 }
                 {
-                  const std::complex<VectorizedArray<Number>> eig1(
-                    inverse_eigenvectors[0](i, j)),
-                    eig2(inverse_eigenvectors[1](i, j));
-                  this->inverse_eigenvectors[d][c] =
+                  const vcomplex eig1(inverse_eigenvectors[0](j, i)),
+                    eig2(inverse_eigenvectors[1](j, i));
+                  this->inverse_eigenvectors[d][j * n + i] =
                     (1.0 - blend_factor_eig[d]) * eig1 +
                     blend_factor_eig[d] * eig2;
                 }
@@ -1695,6 +1711,11 @@ namespace DGAdvection
       factor_time[s] =
         std::cos(numbers::PI * (time + irk.c(s) * time_step) / FINAL_TIME);
 
+    dealii::ndarray<Number, n_stages, n_stages> inv_A_dt;
+    for (unsigned int i = 0; i < n_stages; ++i)
+      for (unsigned int j = 0; j < n_stages; ++j)
+        inv_A_dt[i][j] = irk.inv_A(i, j) * inv_dt;
+
     for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell)
       {
         eval.reinit(cell);
@@ -1732,7 +1753,7 @@ namespace DGAdvection
                     volume_val[c] =
                       ((factor_skew * speed) * gradu[c]) * factor_time[c];
                     for (unsigned int b = 0; b < n_stages; ++b)
-                      volume_val[c] += inv_dt * u[b] * irk.inv_A(c, b);
+                      volume_val[c] += inv_A_dt[c][b] * u[b];
                   }
                 eval.submit_value(volume_val, q);
               }
@@ -2178,7 +2199,6 @@ namespace DGAdvection
     Vector<double>                 local_src(eval.dofs_per_cell *
                              VectorizedArray<Number>::size());
     Vector<double>                 local_dst(local_src);
-    IRK                            irk;
 
     /*
     eval.reinit(0);
@@ -2226,7 +2246,7 @@ namespace DGAdvection
 
     // CellwisePreconditioner<n_stages, Number> precondition(
     //  data.get_mapping_info().cell_data[0].descriptor[0].quadrature, irk.A);
-    const unsigned int     n_max_iterations = 2;
+    const unsigned int     n_max_iterations = 4;
     IterationNumberControl control(n_max_iterations, 1e-14, false, false);
     typename SolverGMRES<Vector<Number>>::AdditionalData gmres_data;
     gmres_data.right_preconditioning      = true;
@@ -2236,6 +2256,7 @@ namespace DGAdvection
     gmres_data.batched_mode      = true;
     // gmres_data.exact_residual = false;
     SolverGMRES<Vector<Number>> gmres(control, memory, gmres_data);
+    CellwisePreconditionerFDM<dim, fe_degree, n_stages> precondition(irk);
 
     for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
       {
@@ -2255,18 +2276,16 @@ namespace DGAdvection
         for (unsigned int s = 1; s < n_stages; ++s)
           avg_time_factor += factor_time[s];
         avg_time_factor *= (1. / n_stages);
-        CellwisePreconditionerFDM<dim, fe_degree, n_stages> precondition(
-          eigenvectors,
-          inverse_eigenvectors,
-          eigenvalues,
-          determinant(eval.inverse_jacobian(0)),
-          scaled_cell_velocity[cell] * avg_time_factor,
-          1. / time_step,
-          irk);
+        precondition.reinit(eigenvectors,
+                            inverse_eigenvectors,
+                            eigenvalues,
+                            determinant(eval.inverse_jacobian(0)),
+                            scaled_cell_velocity[cell] * avg_time_factor,
+                            1. / time_step);
         local_operator.transform_to_collocation(eval.begin_dof_values(),
                                                 local_src);
-        gmres.solve(local_operator, local_dst, local_src, precondition);
-        // precondition.vmult(local_dst, local_src);
+        // gmres.solve(local_operator, local_dst, local_src, precondition);
+        precondition.vmult(local_dst, local_src);
         local_operator.transform_from_collocation(local_dst,
                                                   eval.begin_dof_values());
         /*
@@ -2303,11 +2322,11 @@ namespace DGAdvection
     typedef typename AdvectionOperation<dim, fe_degree>::Number Number;
     AdvectionProblem();
     void
-    run();
+    run(const unsigned int n_global_refinements);
 
   private:
     void
-    make_grid();
+    make_grid(const unsigned int n_global_refinements);
     void
     setup_dofs();
     void
@@ -2352,7 +2371,7 @@ namespace DGAdvection
 
   template <int dim>
   void
-  AdvectionProblem<dim>::make_grid()
+  AdvectionProblem<dim>::make_grid(const unsigned int n_global_refinements)
   {
     time      = 0;
     time_step = 0;
@@ -2629,9 +2648,9 @@ namespace DGAdvection
 
   template <int dim>
   void
-  AdvectionProblem<dim>::run()
+  AdvectionProblem<dim>::run(const unsigned int n_global_refinements)
   {
-    make_grid();
+    make_grid(n_global_refinements);
     setup_dofs();
 
     // Initialize the advection operator and the time integrator that will
@@ -2690,7 +2709,7 @@ namespace DGAdvection
         // current matrix applied to old solutions of the linear system,
         // orthogonalized by the modified Gram-Schmidt process
         const unsigned int n_max_steps =
-          timestep_number > 5 ? 5 : timestep_number - 1;
+          timestep_number > 4 ? 4 : timestep_number - 1;
         FullMatrix<double> projection_matrix(n_max_steps, n_max_steps);
         unsigned int       step = 0;
         for (; step < n_max_steps; ++step)
@@ -2760,8 +2779,11 @@ namespace DGAdvection
         try
           {
             using SolverType =
-              SolverFGMRES<LinearAlgebra::distributed::BlockVector<Number>>;
+              SolverGMRES<LinearAlgebra::distributed::BlockVector<Number>>;
             typename SolverType::AdditionalData data;
+            data.orthogonalization_strategy = SolverType::AdditionalData::
+              OrthogonalizationStrategy::classical_gram_schmidt;
+            data.right_preconditioning = true;
             // data.exact_residual = false;
             SolverType solver(control_fast, memory, data);
 
@@ -2801,12 +2823,17 @@ namespace DGAdvection
                   << rhs_norm << " " << control_fast.initial_value() << " "
                   << control_fast.last_value() << std::endl;
           }
-        pcout << " n iter " << control.last_step() + control_fast.last_step()
-              << " " << rhs_norm << " " << control_fast.initial_value() << " "
-              << control_fast.last_value() << " tsol = " << my_time << "  pro ";
-        for (const auto d : project_sol)
-          pcout << d << " ";
-        pcout << std::endl;
+        if (false)
+          {
+            pcout << " n iter "
+                  << control.last_step() + control_fast.last_step() << " "
+                  << rhs_norm << " " << control_fast.initial_value() << " "
+                  << control_fast.last_value() << " tsol = " << my_time
+                  << "  proj ";
+            for (const auto d : project_sol)
+              pcout << d << " ";
+            pcout << std::endl;
+          }
         output_time += timer.wall_time();
       }
 
@@ -2845,6 +2872,14 @@ main(int argc, char **argv)
 
   Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
 
+  // The only run-time parameter is to control the mesh size by the number the
+  // initial mesh (consisting of a single line/square/cube) is refined by
+  // doubling the number of elements for every increase in number. Thus, the
+  // number of elements is given by 2^(dim * n_global_refinements)
+  unsigned int n_global_refinements = 5;
+  if (argc > 1)
+    n_global_refinements = std::atoi(argv[1]);
+
   try
     {
       deallog.depth_console(0);
@@ -2853,7 +2888,7 @@ main(int argc, char **argv)
       // 'dimension' as the actual template argument here, rather than the
       // placeholder 'dim' used as *template* in the class definitions above.
       AdvectionProblem<dimension> advect_problem;
-      advect_problem.run();
+      advect_problem.run(n_global_refinements);
     }
   catch (std::exception &exc)
     {
