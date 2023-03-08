@@ -516,7 +516,7 @@ namespace DGAdvection
   {
   public:
     template <int dim>
-    CellwisePreconditioner(const Quadrature<dim> &   cell_quadrature)
+    CellwisePreconditioner(const Quadrature<dim> &cell_quadrature)
     {
       inverse_quadrature_weight.resize(cell_quadrature.size());
       for (unsigned int q = 0; q < cell_quadrature.size(); ++q)
@@ -553,8 +553,166 @@ namespace DGAdvection
     }
 
   private:
-    std::vector<Number>       inverse_quadrature_weight;
-    VectorizedArray<Number>   inverse_jacobian_determinant;
+    std::vector<Number>     inverse_quadrature_weight;
+    VectorizedArray<Number> inverse_jacobian_determinant;
+  };
+
+
+
+  template <int dim, int fe_degree, typename Number = double>
+  class CellwisePreconditionerFDM
+  {
+  public:
+    static constexpr unsigned int n = fe_degree + 1;
+    using vcomplex                  = std::complex<VectorizedArray<Number>>;
+
+    CellwisePreconditionerFDM(
+      const std::array<LAPACKFullMatrix<std::complex<double>>, 2> &eigenvectors,
+      const std::array<LAPACKFullMatrix<std::complex<double>>, 2>
+        &inverse_eigenvectors,
+      const std::array<std::vector<std::complex<double>>, 2> &eigenvalues,
+      const VectorizedArray<Number>                  inv_jacobian_determinant,
+      const Tensor<1, dim, VectorizedArray<Number>> &average_velocity,
+      const double                                   inv_dt)
+    {
+      Tensor<1, dim, VectorizedArray<Number>> blend_factor_eig;
+      for (unsigned int d = 0; d < dim; ++d)
+        for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
+          if (average_velocity[d][v] < 0.0)
+            blend_factor_eig[d][v] = 1.0;
+          else
+            blend_factor_eig[d][v] = 0.0;
+
+      for (unsigned int i2 = 0, c = 0; i2 < (dim > 2 ? n : 1); ++i2)
+        for (unsigned int i1 = 0; i1 < (dim > 1 ? n : 1); ++i1)
+          for (unsigned int i0 = 0; i0 < n; ++i0, ++c)
+            {
+              std::array<unsigned int, 3>           indices{i0, i1, i2};
+              std::complex<VectorizedArray<Number>> diagonal_element =
+                make_vectorized_array<Number>(inv_dt);
+              for (unsigned int d = 0; d < dim; ++d)
+                {
+                  std::complex<VectorizedArray<Number>> eig1(
+                    eigenvalues[0][indices[d]]),
+                    eig2(eigenvalues[1][indices[d]]);
+                  diagonal_element +=
+                    average_velocity[d] * ((1.0 - blend_factor_eig[d]) * eig1 +
+                                           blend_factor_eig[d] * eig2);
+                }
+              inverse_eigenvalues_for_cell[c] =
+                inv_jacobian_determinant / diagonal_element;
+            }
+      for (unsigned int d = 0; d < dim; ++d)
+        {
+          for (unsigned int i = 0, c = 0; i < n; ++i)
+            for (unsigned int j = 0; j < n; ++j, ++c)
+              {
+                {
+                  const std::complex<VectorizedArray<Number>> eig1(
+                    eigenvectors[0](i, j)),
+                    eig2(eigenvectors[1](i, j));
+                  this->eigenvectors[d][c] =
+                    (1.0 - blend_factor_eig[d]) * eig1 +
+                    blend_factor_eig[d] * eig2;
+                }
+                {
+                  const std::complex<VectorizedArray<Number>> eig1(
+                    inverse_eigenvectors[0](i, j)),
+                    eig2(inverse_eigenvectors[1](i, j));
+                  this->inverse_eigenvectors[d][c] =
+                    (1.0 - blend_factor_eig[d]) * eig1 +
+                    blend_factor_eig[d] * eig2;
+                }
+              }
+        }
+      /*
+      vcomplex mat[n * n][n * n];
+      for (unsigned int i1=0; i1<n; ++i1)
+        for (unsigned int i0=0; i0<n; ++i0)
+          for (unsigned int j1=0; j1<n; ++j1)
+            for (unsigned int j0=0; j0<n; ++j0)
+              mat[i1 * n + i0][j1 * n + j0] = this->inverse_eigenvectors[0][i0 *
+      n + j0] * this->inverse_eigenvectors[1][i1 * n + j1] *
+      inverse_eigenvalues_for_cell[i1 * n + i0]; vcomplex mat2[n * n][n * n];
+      for (unsigned int i1=0; i1<n; ++i1)
+        for (unsigned int i0=0; i0<n; ++i0)
+          for (unsigned int j1=0; j1<n; ++j1)
+            for (unsigned int j0=0; j0<n; ++j0)
+              mat2[i1 * n + i0][j1 * n + j0] = this->eigenvectors[0][i0 * n +
+      j0] * this->eigenvectors[1][i1 * n + j1]; for (unsigned int i=0; i<n*n;
+      ++i)
+        {
+          for (unsigned int j=0; j<n*n; ++j)
+            {
+              vcomplex sum = vcomplex();
+              for (unsigned int k=0; k<n * n; ++k)
+                sum += mat2[i][k] * mat[k][j];
+              std::cout << sum << " ";
+            }
+          std::cout << std::endl;
+        }
+      */
+    }
+
+    void
+    vmult(Vector<Number> &dst, const Vector<Number> &src) const
+    {
+      // copy from real to complex vector
+      AssertDimension(VectorizedArray<Number>::size() * data_array.size(),
+                      dst.size());
+      AssertDimension(VectorizedArray<Number>::size() * data_array.size(),
+                      src.size());
+      for (unsigned int i = 0; i < data_array.size(); ++i)
+        {
+          VectorizedArray<Number> value;
+          value.load(src.begin() + i * VectorizedArray<Number>::size());
+          data_array[i].real(value);
+          data_array[i].imag(VectorizedArray<Number>());
+        }
+
+      using Eval = internal::
+        EvaluatorTensorProduct<internal::evaluate_general, dim, n, n, vcomplex>;
+      // apply V M^{-1}
+      Eval::template apply<0, false, false>(inverse_eigenvectors[0].data(),
+                                            data_array.data(),
+                                            data_array.data());
+      if (dim > 1)
+        Eval::template apply<1, false, false>(inverse_eigenvectors[1].data(),
+                                              data_array.data(),
+                                              data_array.data());
+      if (dim > 2)
+        Eval::template apply<2, false, false>(inverse_eigenvectors[2].data(),
+                                              data_array.data(),
+                                              data_array.data());
+
+      // apply inv(I x Lambda + Lambda x I)
+      for (unsigned int c = 0; c < data_array.size(); ++c)
+        data_array[c] *= inverse_eigenvalues_for_cell[c];
+
+      // apply V^{-1}
+      Eval::template apply<0, false, false>(eigenvectors[0].data(),
+                                            data_array.data(),
+                                            data_array.data());
+      if (dim > 1)
+        Eval::template apply<1, false, false>(eigenvectors[1].data(),
+                                              data_array.data(),
+                                              data_array.data());
+      if (dim > 2)
+        Eval::template apply<2, false, false>(eigenvectors[2].data(),
+                                              data_array.data(),
+                                              data_array.data());
+
+      // copy back to real vector
+      for (unsigned int i = 0; i < data_array.size(); ++i)
+        data_array[i].real().store(dst.begin() +
+                                   i * VectorizedArray<Number>::size());
+    }
+
+  private:
+    dealii::ndarray<vcomplex, dim, n * n>        eigenvectors;
+    dealii::ndarray<vcomplex, dim, n * n>        inverse_eigenvectors;
+    std::array<vcomplex, Utilities::pow(n, dim)> inverse_eigenvalues_for_cell;
+    mutable std::array<vcomplex, Utilities::pow(n, dim)> data_array;
   };
 
 
@@ -643,14 +801,13 @@ namespace DGAdvection
     }
 
     void
-    update_solution(LinearAlgebra::distributed::Vector<Number> &solution,
-                    const LinearAlgebra::distributed::Vector<Number>
-                      &stage_solution) const
+    update_solution(
+      LinearAlgebra::distributed::Vector<Number> &      solution,
+      const LinearAlgebra::distributed::Vector<Number> &stage_solution) const
     {
       Timer time;
       DEAL_II_OPENMP_SIMD_PRAGMA
-      for (unsigned int i = 0; i < stage_solution.locally_owned_size();
-           ++i)
+      for (unsigned int i = 0; i < stage_solution.locally_owned_size(); ++i)
         {
           Number value = stage_solution.local_element(i);
           solution.local_element(i) += time_step * value;
@@ -698,6 +855,11 @@ namespace DGAdvection
     Table<2, Tensor<1, dim, VectorizedArray<Number>>> speeds_cells;
     Table<2, Tensor<1, dim, VectorizedArray<Number>>> speeds_faces;
     std::vector<Table<2, VectorizedArray<Number>>>    normal_speeds_faces;
+
+    std::array<LAPACKFullMatrix<std::complex<double>>, 2> eigenvectors,
+      inverse_eigenvectors;
+    std::array<std::vector<std::complex<double>>, 2>       eigenvalues;
+    AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> scaled_cell_velocity;
 
     void
     local_apply_domain(
@@ -825,6 +987,82 @@ namespace DGAdvection
               }
         }
     }
+
+    QGauss<1>               gauss_quad(dof_handler.get_fe().degree + 1);
+    FE_DGQArbitraryNodes<1> fe_1d(gauss_quad);
+    constexpr unsigned int  n = fe_degree + 1;
+    for (unsigned int c = 0; c < 2; ++c)
+      {
+        LAPACKFullMatrix<double> deriv_matrix(n, n);
+        for (unsigned int q = 0; q < n; ++q)
+          {
+            for (unsigned int i = 0; i < n; ++i)
+              for (unsigned int j = 0; j < n; ++j)
+                deriv_matrix(i, j) -=
+                  fe_1d.shape_grad(i, gauss_quad.point(q))[0] *
+                  fe_1d.shape_value(j, gauss_quad.point(q)) *
+                  gauss_quad.weight(q);
+          }
+        const double sign_advection = (c == 0) ? 1.0 : -1.0;
+        for (unsigned int i = 0; i < n; ++i)
+          for (unsigned int j = 0; j < n; ++j)
+            deriv_matrix(i, j) += -fe_1d.shape_value(i, Point<1>()) *
+                                    fe_1d.shape_value(j, Point<1>()) *
+                                    (0.5 - flux_alpha * 0.5 * sign_advection) +
+                                  fe_1d.shape_value(i, Point<1>(1.0)) *
+                                    fe_1d.shape_value(j, Point<1>(1.0)) *
+                                    (0.5 + flux_alpha * 0.5 * sign_advection);
+
+        for (unsigned int i = 0; i < n; ++i)
+          for (unsigned int j = 0; j < n; ++j)
+            deriv_matrix(i, j) *= (1. / gauss_quad.weight(i));
+        deriv_matrix.compute_eigenvalues(true, false);
+
+        eigenvalues[c].resize(n);
+        for (unsigned int i = 0; i < n; ++i)
+          eigenvalues[c][i] = deriv_matrix.eigenvalue(i);
+
+        eigenvectors[c].reinit(n, n);
+        const auto &vr = deriv_matrix.vr;
+        for (unsigned int i = 0; i < n;)
+          if (eigenvalues[c][i].imag() != 0.)
+            {
+              for (unsigned int j = 0; j < n; ++j)
+                {
+                  eigenvectors[c](j, i).real(vr[i * n + j]);
+                  eigenvectors[c](j, i + 1).real(vr[i * n + j]);
+                  eigenvectors[c](j, i).imag(vr[(i + 1) * n + j]);
+                  eigenvectors[c](j, i + 1).imag(-vr[(i + 1) * n + j]);
+                }
+              i += 2;
+            }
+          else
+            {
+              for (unsigned int j = 0; j < n; ++j)
+                eigenvectors[c](j, i).real(vr[i * n + j]);
+              ++i;
+            }
+        inverse_eigenvectors[c] = eigenvectors[c];
+        inverse_eigenvectors[c].invert();
+        for (unsigned int i = 0; i < n; ++i)
+          for (unsigned int j = 0; j < n; ++j)
+            inverse_eigenvectors[c](i, j) *= (1. / gauss_quad.weight(j));
+      }
+    scaled_cell_velocity.resize(data.n_cell_batches());
+    FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> eval(data);
+    for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
+      {
+        eval.reinit(cell);
+        Tensor<1, dim, VectorizedArray<Number>> average_velocity;
+        VectorizedArray<Number>                 cell_volume = {};
+        for (unsigned int q = 0; q < eval.n_q_points; ++q)
+          {
+            average_velocity +=
+              eval.inverse_jacobian(q) * speeds_cells(cell, q) * eval.JxW(q);
+            cell_volume += eval.JxW(q);
+          }
+        scaled_cell_velocity[cell] = average_velocity / cell_volume;
+      }
   }
 
 
@@ -1267,13 +1505,53 @@ namespace DGAdvection
       std::cos(numbers::PI * (time + time_step) / FINAL_TIME);
 
     FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> eval(data);
-    MyVectorMemory<Vector<double>> memory;
-    Vector<double>                 local_src(eval.dofs_per_cell *
+    MyVectorMemory<Vector<double>>                         memory;
+    Vector<double> local_src(eval.dofs_per_cell *
                              VectorizedArray<Number>::size());
-    Vector<double>                 local_dst(local_src);
-    CellwisePreconditioner<Number> precondition(
-      data.get_mapping_info().cell_data[0].descriptor[0].quadrature);
-    const unsigned int     n_max_iterations = 40;
+    Vector<double> local_dst(local_src);
+    eval.reinit(0);
+    CellwiseOperator<dim, fe_degree> local_operator(
+      eval.inverse_jacobian(0),
+      data.get_shape_info().data[0],
+      &speeds_cells(0, 0),
+      normal_speeds_faces[0],
+      data.get_mapping_info().cell_data[0].descriptor[0].quadrature,
+      data.get_mapping_info().face_data[0].descriptor[0].quadrature,
+      1. / time_step,
+      1.);
+    for (unsigned int d = 0; d < eval.dofs_per_cell; ++d)
+      {
+        local_src                                      = 0.;
+        local_src(d * VectorizedArray<Number>::size()) = 1.;
+        local_operator.vmult(local_dst, local_src);
+        for (unsigned int e = 0; e < eval.dofs_per_cell; ++e)
+          std::cout << local_dst(e * VectorizedArray<Number>::size()) << " ";
+        std::cout << std::endl;
+      }
+    std::cout << std::endl;
+    CellwisePreconditionerFDM<dim, fe_degree, Number> precond(
+      eigenvectors,
+      inverse_eigenvectors,
+      eigenvalues,
+      determinant(eval.inverse_jacobian(0)),
+      scaled_cell_velocity[0],
+      1. / time_step);
+    for (unsigned int d = 0; d < eval.dofs_per_cell; ++d)
+      {
+        local_src                                      = 0.;
+        local_src(d * VectorizedArray<Number>::size()) = 1.;
+        precond.vmult(local_dst, local_src);
+        for (unsigned int e = 0; e < eval.dofs_per_cell; ++e)
+          std::cout << local_dst(e * VectorizedArray<Number>::size()) << " ";
+        std::cout << std::endl;
+      }
+    std::cout << std::endl;
+    std::abort();
+
+    // CellwisePreconditioner<Number> precondition(
+    //  data.get_mapping_info().cell_data[0].descriptor[0].quadrature);
+
+    const unsigned int     n_max_iterations = 3;
     IterationNumberControl control(n_max_iterations, 1e-14, false, false);
     typename SolverGMRES<Vector<Number>>::AdditionalData gmres_data;
     gmres_data.right_preconditioning      = true;
@@ -1297,7 +1575,13 @@ namespace DGAdvection
           data.get_mapping_info().face_data[0].descriptor[0].quadrature,
           1. / time_step,
           factor_time);
-        precondition.reinit(eval.inverse_jacobian(0));
+        CellwisePreconditionerFDM<dim, fe_degree> precondition(
+          eigenvectors,
+          inverse_eigenvectors,
+          eigenvalues,
+          determinant(eval.inverse_jacobian(0)),
+          scaled_cell_velocity[cell] * factor_time,
+          1. / time_step);
         local_operator.transform_to_collocation(eval.begin_dof_values(),
                                                 local_src);
         gmres.solve(local_operator, local_dst, local_src, precondition);
@@ -1775,7 +2059,6 @@ namespace DGAdvection
 
             solver.solve(advection_operator, stage_sol[0], rhs, precondition);
           }
-        const double my_time = timer.wall_time();
 
         advection_operator.update_solution(solution, stage_sol[0]);
 
