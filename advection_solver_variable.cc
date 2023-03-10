@@ -68,12 +68,6 @@ namespace DGAdvection
   // (around 30), depending on the dimension and the mesh size
   const unsigned int fe_degree = 4;
 
-  // This parameter controls the mesh size by the number the initial mesh
-  // (consisting of a single line/square/cube) is refined by doubling the
-  // number of elements for every increase in number. Thus, the number of
-  // elements is given by 2^(dim * n_global_refinements)
-  const unsigned int n_global_refinements = 8;
-
   // The time step size is controlled via this parameter as
   // dt = courant_number * min_h / (transport_norm * fe_degree^1.5)
   const double courant_number = 0.5;
@@ -146,10 +140,10 @@ namespace DGAdvection
     Number
     value(const Point<dim, Number> &p) const
     {
-      static_assert(dim == 2,
-                    "Only dimension 2 implemented for exact solution");
-      return std::exp(
-        -400. * ((p[0] - 0.5) * (p[0] - 0.5) + (p[1] - 0.75) * (p[1] - 0.75)));
+      return std::exp(-400. * ((p[0] - 0.5) * (p[0] - 0.5) +
+                               (p[1] - 0.75) * (p[1] - 0.75))) +
+             std::exp(-100. * ((p[0] - 0.5) * (p[0] - 0.5) +
+                               (p[1] - 0.25) * (p[1] - 0.25)));
     }
   };
 
@@ -170,10 +164,16 @@ namespace DGAdvection
       const double factor = std::cos(numbers::PI * time / FINAL_TIME) * 2.;
       Tensor<1, dim, Number> result;
 
-      result[0] = factor * std::sin(2 * numbers::PI * p[1]) *
-                  std::sin(numbers::PI * p[0]) * std::sin(numbers::PI * p[0]);
-      result[1] = -factor * std::sin(2 * numbers::PI * p[0]) *
-                  std::sin(numbers::PI * p[1]) * std::sin(numbers::PI * p[1]);
+      result[0] = factor * (std::sin(2 * numbers::PI * p[1]) *
+                              std::sin(numbers::PI * p[0]) *
+                              std::sin(numbers::PI * p[0]) +
+                            0.2 * std::sin(20 * numbers::PI * (p[0] + 0.2)) *
+                              std::cos(20 * numbers::PI * (p[1] + 0.3)));
+      result[1] = -factor * (std::sin(2 * numbers::PI * p[0]) *
+                               std::sin(numbers::PI * p[1]) *
+                               std::sin(numbers::PI * p[1]) +
+                             0.2 * std::cos(20 * numbers::PI * (p[0] + 0.2)) *
+                               std::sin(20 * numbers::PI * (p[1] + 0.3)));
       return result;
     }
 
@@ -288,7 +288,7 @@ namespace DGAdvection
   class AdvectionOperation
   {
   public:
-    typedef double Number;
+    using Number = double;
 
     AdvectionOperation()
       : computing_times(3)
@@ -933,11 +933,11 @@ namespace DGAdvection
     typedef typename AdvectionOperation<dim, fe_degree>::Number Number;
     AdvectionProblem();
     void
-    run();
+    run(const unsigned int n_global_refinements);
 
   private:
     void
-    make_grid();
+    make_grid(const unsigned int n_global_refinements);
     void
     setup_dofs();
     void
@@ -982,7 +982,7 @@ namespace DGAdvection
 
   template <int dim>
   void
-  AdvectionProblem<dim>::make_grid()
+  AdvectionProblem<dim>::make_grid(const unsigned int n_global_refinements)
   {
     time      = 0;
     time_step = 0;
@@ -1189,9 +1189,9 @@ namespace DGAdvection
 
   template <int dim>
   void
-  AdvectionProblem<dim>::run()
+  AdvectionProblem<dim>::run(const unsigned int n_global_refinements)
   {
-    make_grid();
+    make_grid(n_global_refinements);
     setup_dofs();
 
     // Initialize the advection operator and the time integrator that will
@@ -1279,6 +1279,14 @@ main(int argc, char **argv)
 
   Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
 
+  // The only run-time parameter is to control the mesh size by the number the
+  // initial mesh (consisting of a single line/square/cube) is refined by
+  // doubling the number of elements for every increase in number. Thus, the
+  // number of elements is given by 2^(dim * n_global_refinements)
+  unsigned int n_global_refinements = 5;
+  if (argc > 1)
+    n_global_refinements = std::atoi(argv[1]);
+
   try
     {
       deallog.depth_console(0);
@@ -1287,7 +1295,7 @@ main(int argc, char **argv)
       // 'dimension' as the actual template argument here, rather than the
       // placeholder 'dim' used as *template* in the class definitions above.
       AdvectionProblem<dimension> advect_problem;
-      advect_problem.run();
+      advect_problem.run(n_global_refinements);
     }
   catch (std::exception &exc)
     {
