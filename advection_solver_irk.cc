@@ -130,7 +130,8 @@ namespace DGAdvection
     {}
 
     virtual double
-    value(const Point<dim> &p, const unsigned int /*component*/ = 0) const
+    value(const Point<dim> &p,
+          const unsigned int /*component*/ = 0) const override
     {
       return value<double>(p);
     }
@@ -198,7 +199,7 @@ namespace DGAdvection
     {}
 
     Point<dim>
-    push_forward(const Point<dim> &chart_point) const
+    push_forward(const Point<dim> &chart_point) const override
     {
       double sinval = deformation;
       for (unsigned int d = 0; d < dim; ++d)
@@ -211,7 +212,7 @@ namespace DGAdvection
     }
 
     Point<dim>
-    pull_back(const Point<dim> &space_point) const
+    pull_back(const Point<dim> &space_point) const override
     {
       Point<dim> x = space_point;
       Point<dim> one;
@@ -265,7 +266,7 @@ namespace DGAdvection
     }
 
     std::unique_ptr<Manifold<dim>>
-    clone() const
+    clone() const override
     {
       return std::make_unique<DeformedCubeManifold<dim>>(left,
                                                          right,
@@ -395,26 +396,7 @@ namespace DGAdvection
       for (unsigned int i = 0; i < A.n(); ++i)
         eigenvalues[i] = A_lap.eigenvalue(i);
 
-      const auto &vr = A_lap.vr;
-      T.reinit(A.n(), A.n());
-      for (unsigned int i = 0; i < A.n();)
-        if (eigenvalues[i].imag() != 0.)
-          {
-            for (unsigned int j = 0; j < A.n(); ++j)
-              {
-                T(j, i).real(vr[i * A.n() + j]);
-                T(j, i + 1).real(vr[i * A.n() + j]);
-                T(j, i).imag(vr[(i + 1) * A.n() + j]);
-                T(j, i + 1).imag(-vr[(i + 1) * A.n() + j]);
-              }
-            i += 2;
-          }
-        else
-          {
-            for (unsigned int j = 0; j < A.n(); ++j)
-              T(j, i).real(vr[i * A.n() + j]);
-            ++i;
-          }
+      T     = A_lap.get_right_eigenvectors();
       inv_T = T;
       inv_T.gauss_jordan();
     }
@@ -1094,14 +1076,13 @@ namespace DGAdvection
     {}
 
     void
-    reinit(
-      const std::array<LAPACKFullMatrix<std::complex<double>>, 2> &eigenvectors,
-      const std::array<LAPACKFullMatrix<std::complex<double>>, 2>
-        &inverse_eigenvectors,
-      const std::array<std::vector<std::complex<double>>, 2> &eigenvalues,
-      const VectorizedArray<Number>                  inv_jacobian_determinant,
-      const Tensor<1, dim, VectorizedArray<Number>> &average_velocity,
-      const double                                   inv_dt)
+    reinit(const std::array<FullMatrix<std::complex<double>>, 2> &eigenvectors,
+           const std::array<FullMatrix<std::complex<double>>, 2>
+             &inverse_eigenvectors,
+           const std::array<std::vector<std::complex<double>>, 2> &eigenvalues,
+           const VectorizedArray<Number> inv_jacobian_determinant,
+           const Tensor<1, dim, VectorizedArray<Number>> &average_velocity,
+           const double                                   inv_dt)
     {
       Tensor<1, dim, VectorizedArray<Number>> blend_factor_eig;
       for (unsigned int d = 0; d < dim; ++d)
@@ -1241,7 +1222,8 @@ namespace DGAdvection
                                                   data_array[s].data());
         }
 
-      // copy back to real vector
+      // copy back to real vector, also applying the transformation of the IRK
+      // time stepping
       for (unsigned int i = 0; i < data_array[0].size(); ++i)
         {
           for (unsigned int s = 0; s < n_stages; ++s)
@@ -1425,7 +1407,7 @@ namespace DGAdvection
     Table<2, Tensor<1, dim, VectorizedArray<Number>>> speeds_faces;
     std::vector<Table<2, VectorizedArray<Number>>>    normal_speeds_faces;
 
-    std::array<LAPACKFullMatrix<std::complex<double>>, 2> eigenvectors,
+    std::array<FullMatrix<std::complex<double>>, 2> eigenvectors,
       inverse_eigenvectors;
     std::array<std::vector<std::complex<double>>, 2>       eigenvalues;
     AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> scaled_cell_velocity;
@@ -1591,28 +1573,9 @@ namespace DGAdvection
         for (unsigned int i = 0; i < n; ++i)
           eigenvalues[c][i] = deriv_matrix.eigenvalue(i);
 
-        eigenvectors[c].reinit(n, n);
-        const auto &vr = deriv_matrix.vr;
-        for (unsigned int i = 0; i < n;)
-          if (eigenvalues[c][i].imag() != 0.)
-            {
-              for (unsigned int j = 0; j < n; ++j)
-                {
-                  eigenvectors[c](j, i).real(vr[i * n + j]);
-                  eigenvectors[c](j, i + 1).real(vr[i * n + j]);
-                  eigenvectors[c](j, i).imag(vr[(i + 1) * n + j]);
-                  eigenvectors[c](j, i + 1).imag(-vr[(i + 1) * n + j]);
-                }
-              i += 2;
-            }
-          else
-            {
-              for (unsigned int j = 0; j < n; ++j)
-                eigenvectors[c](j, i).real(vr[i * n + j]);
-              ++i;
-            }
+        eigenvectors[c]         = deriv_matrix.get_right_eigenvectors();
         inverse_eigenvectors[c] = eigenvectors[c];
-        inverse_eigenvectors[c].invert();
+        inverse_eigenvectors[c].gauss_jordan();
         for (unsigned int i = 0; i < n; ++i)
           for (unsigned int j = 0; j < n; ++j)
             inverse_eigenvectors[c](i, j) *= (1. / gauss_quad.weight(j));
@@ -2337,7 +2300,7 @@ namespace DGAdvection
 
     std::shared_ptr<Triangulation<dim>> triangulation;
     MappingQGeneric<dim>                mapping;
-    FE_DGQArbitraryNodes<dim>           fe;
+    FE_DGQ<dim>                         fe;
     DoFHandler<dim>                     dof_handler;
 
     IndexSet locally_relevant_dofs;
@@ -2352,7 +2315,7 @@ namespace DGAdvection
   template <int dim>
   AdvectionProblem<dim>::AdvectionProblem()
     : mapping(fe_degree)
-    , fe(QGaussLobatto<1>(fe_degree + 1))
+    , fe(fe_degree)
     , time(0)
     , time_step(0)
     , pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
@@ -2709,7 +2672,7 @@ namespace DGAdvection
         // current matrix applied to old solutions of the linear system,
         // orthogonalized by the modified Gram-Schmidt process
         const unsigned int n_max_steps =
-          timestep_number > 4 ? 4 : timestep_number - 1;
+          timestep_number > 3 ? 3 : timestep_number - 1;
         FullMatrix<double> projection_matrix(n_max_steps, n_max_steps);
         unsigned int       step = 0;
         for (; step < n_max_steps; ++step)
@@ -2784,7 +2747,7 @@ namespace DGAdvection
             data.orthogonalization_strategy = SolverType::AdditionalData::
               OrthogonalizationStrategy::classical_gram_schmidt;
             data.right_preconditioning = true;
-            // data.exact_residual = false;
+            data.exact_residual = false;
             SolverType solver(control_fast, memory, data);
 
             solver.solve(advection_operator, stage_sol[0], rhs, precondition);
