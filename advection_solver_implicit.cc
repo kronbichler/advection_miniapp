@@ -134,7 +134,8 @@ namespace DGAdvection
     {}
 
     virtual double
-    value(const Point<dim> &p, const unsigned int /*component*/ = 0) const
+    value(const Point<dim> &p,
+          const unsigned int /*component*/ = 0) const override
     {
       return value<double>(p);
     }
@@ -194,7 +195,7 @@ namespace DGAdvection
     {}
 
     Point<dim>
-    push_forward(const Point<dim> &chart_point) const
+    push_forward(const Point<dim> &chart_point) const override
     {
       double sinval = deformation;
       for (unsigned int d = 0; d < dim; ++d)
@@ -207,7 +208,7 @@ namespace DGAdvection
     }
 
     Point<dim>
-    pull_back(const Point<dim> &space_point) const
+    pull_back(const Point<dim> &space_point) const override
     {
       Point<dim> x = space_point;
       Point<dim> one;
@@ -261,7 +262,7 @@ namespace DGAdvection
     }
 
     std::unique_ptr<Manifold<dim>>
-    clone() const
+    clone() const override
     {
       return std::make_unique<DeformedCubeManifold<dim>>(left,
                                                          right,
@@ -1023,24 +1024,11 @@ namespace DGAdvection
           eigenvalues[c][i] = deriv_matrix.eigenvalue(i);
 
         eigenvectors[c].reinit(n, n);
-        const auto &vr = deriv_matrix.vr;
-        for (unsigned int i = 0; i < n;)
-          if (eigenvalues[c][i].imag() != 0.)
+        const auto vr = deriv_matrix.get_right_eigenvectors();
+        for (unsigned int i = 0; i < n; ++i)
+          for (unsigned int j = 0; j < n; ++j)
             {
-              for (unsigned int j = 0; j < n; ++j)
-                {
-                  eigenvectors[c](j, i).real(vr[i * n + j]);
-                  eigenvectors[c](j, i + 1).real(vr[i * n + j]);
-                  eigenvectors[c](j, i).imag(vr[(i + 1) * n + j]);
-                  eigenvectors[c](j, i + 1).imag(-vr[(i + 1) * n + j]);
-                }
-              i += 2;
-            }
-          else
-            {
-              for (unsigned int j = 0; j < n; ++j)
-                eigenvectors[c](j, i).real(vr[i * n + j]);
-              ++i;
+              eigenvectors[c](j, i) = vr(j, i);
             }
         inverse_eigenvectors[c] = eigenvectors[c];
         inverse_eigenvectors[c].invert();
@@ -1510,43 +1498,6 @@ namespace DGAdvection
                              VectorizedArray<Number>::size());
     Vector<double> local_dst(local_src);
     eval.reinit(0);
-    CellwiseOperator<dim, fe_degree> local_operator(
-      eval.inverse_jacobian(0),
-      data.get_shape_info().data[0],
-      &speeds_cells(0, 0),
-      normal_speeds_faces[0],
-      data.get_mapping_info().cell_data[0].descriptor[0].quadrature,
-      data.get_mapping_info().face_data[0].descriptor[0].quadrature,
-      1. / time_step,
-      1.);
-    for (unsigned int d = 0; d < eval.dofs_per_cell; ++d)
-      {
-        local_src                                      = 0.;
-        local_src(d * VectorizedArray<Number>::size()) = 1.;
-        local_operator.vmult(local_dst, local_src);
-        for (unsigned int e = 0; e < eval.dofs_per_cell; ++e)
-          std::cout << local_dst(e * VectorizedArray<Number>::size()) << " ";
-        std::cout << std::endl;
-      }
-    std::cout << std::endl;
-    CellwisePreconditionerFDM<dim, fe_degree, Number> precond(
-      eigenvectors,
-      inverse_eigenvectors,
-      eigenvalues,
-      determinant(eval.inverse_jacobian(0)),
-      scaled_cell_velocity[0],
-      1. / time_step);
-    for (unsigned int d = 0; d < eval.dofs_per_cell; ++d)
-      {
-        local_src                                      = 0.;
-        local_src(d * VectorizedArray<Number>::size()) = 1.;
-        precond.vmult(local_dst, local_src);
-        for (unsigned int e = 0; e < eval.dofs_per_cell; ++e)
-          std::cout << local_dst(e * VectorizedArray<Number>::size()) << " ";
-        std::cout << std::endl;
-      }
-    std::cout << std::endl;
-    std::abort();
 
     // CellwisePreconditioner<Number> precondition(
     //  data.get_mapping_info().cell_data[0].descriptor[0].quadrature);
@@ -1554,9 +1505,9 @@ namespace DGAdvection
     const unsigned int     n_max_iterations = 3;
     IterationNumberControl control(n_max_iterations, 1e-14, false, false);
     typename SolverGMRES<Vector<Number>>::AdditionalData gmres_data;
-    gmres_data.right_preconditioning      = true;
-    gmres_data.orthogonalization_strategy = SolverGMRES<Vector<Number>>::
-      AdditionalData::OrthogonalizationStrategy::classical_gram_schmidt;
+    gmres_data.right_preconditioning = true;
+    gmres_data.orthogonalization_strategy =
+      LinearAlgebra::OrthogonalizationStrategy::classical_gram_schmidt;
     gmres_data.max_n_tmp_vectors = n_max_iterations + 2;
     gmres_data.batched_mode      = true;
     // gmres_data.exact_residual = false;

@@ -2212,9 +2212,9 @@ namespace DGAdvection
     const unsigned int     n_max_iterations = 5;
     IterationNumberControl control(n_max_iterations, 1e-14, false, false);
     typename SolverGMRES<Vector<Number>>::AdditionalData gmres_data;
-    gmres_data.right_preconditioning      = true;
-    gmres_data.orthogonalization_strategy = SolverGMRES<Vector<Number>>::
-      AdditionalData::OrthogonalizationStrategy::classical_gram_schmidt;
+    gmres_data.right_preconditioning = true;
+    gmres_data.orthogonalization_strategy =
+      LinearAlgebra::OrthogonalizationStrategy::classical_gram_schmidt;
     gmres_data.max_n_tmp_vectors = n_max_iterations + 2;
     gmres_data.batched_mode      = true;
     // gmres_data.exact_residual = false;
@@ -2786,7 +2786,7 @@ namespace DGAdvection
                   << rhs_norm << " " << control_fast.initial_value() << " "
                   << control_fast.last_value() << std::endl;
           }
-        if (true)
+        if (false)
           {
             pcout << " n iter "
                   << control.last_step() + control_fast.last_step() << " "

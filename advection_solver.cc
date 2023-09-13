@@ -140,7 +140,8 @@ namespace DGAdvection
     }
 
     virtual double
-    value(const Point<dim> &p, const unsigned int /*component*/ = 0) const
+    value(const Point<dim> &p,
+          const unsigned int /*component*/ = 0) const override
     {
       return value<double>(p);
     }
@@ -491,7 +492,9 @@ namespace DGAdvection
         eval.reinit(cell);
 
         // compute u^h(x) from src
-        eval.gather_evaluate(src, true, true);
+        eval.gather_evaluate(src,
+                             EvaluationFlags::values |
+                               EvaluationFlags::gradients);
 
         // loop over quadrature points and compute the local volume flux
         for (unsigned int q = 0; q < eval.n_q_points; ++q)
@@ -504,7 +507,9 @@ namespace DGAdvection
           }
 
         // multiply by nabla v^h(x) and sum
-        eval.integrate_scatter(true, true, dst);
+        eval.integrate_scatter(EvaluationFlags::values |
+                                 EvaluationFlags::gradients,
+                               dst);
       }
   }
 
@@ -536,9 +541,9 @@ namespace DGAdvection
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
         eval_minus.reinit(face);
-        eval_minus.gather_evaluate(src, true, false);
+        eval_minus.gather_evaluate(src, EvaluationFlags::values);
         eval_plus.reinit(face);
-        eval_plus.gather_evaluate(src, true, false);
+        eval_plus.gather_evaluate(src, EvaluationFlags::values);
 
         for (unsigned int q = 0; q < eval_minus.n_q_points; ++q)
           {
@@ -569,8 +574,8 @@ namespace DGAdvection
                                    q);
           }
 
-        eval_minus.integrate_scatter(true, false, dst);
-        eval_plus.integrate_scatter(true, false, dst);
+        eval_minus.integrate_scatter(EvaluationFlags::values, dst);
+        eval_plus.integrate_scatter(EvaluationFlags::values, dst);
       }
   }
 
@@ -595,7 +600,7 @@ namespace DGAdvection
     for (unsigned int face = face_range.first; face < face_range.second; face++)
       {
         eval_minus.reinit(face);
-        eval_minus.gather_evaluate(src, true, false);
+        eval_minus.gather_evaluate(src, EvaluationFlags::values);
 
         for (unsigned int q = 0; q < eval_minus.n_q_points; ++q)
           {
@@ -621,7 +626,7 @@ namespace DGAdvection
                                     q);
           }
 
-        eval_minus.integrate_scatter(true, false, dst);
+        eval_minus.integrate_scatter(EvaluationFlags::values, dst);
       }
   }
 
@@ -789,7 +794,9 @@ namespace DGAdvection
     for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
       {
         phi.reinit(cell);
-        phi.gather_evaluate(vec, true, true);
+        phi.gather_evaluate(vec,
+                            EvaluationFlags::values |
+                              EvaluationFlags::gradients);
         VectorizedArray<Number> mass   = {};
         VectorizedArray<Number> energy = {};
         VectorizedArray<Number> H1semi = {};
