@@ -372,7 +372,7 @@ namespace DGAdvection
 
     void
     apply(const LinearAlgebra::distributed::Vector<Number> &src,
-          LinearAlgebra::distributed::Vector<Number> &      dst,
+          LinearAlgebra::distributed::Vector<Number>       &dst,
           const double                                      current_time);
 
     void
@@ -380,8 +380,8 @@ namespace DGAdvection
                   const Number factor_solution,
                   const Number factor_ai,
                   const LinearAlgebra::distributed::Vector<Number> &current_ri,
-                  LinearAlgebra::distributed::Vector<Number> &      vec_ki,
-                  LinearAlgebra::distributed::Vector<Number> &      solution,
+                  LinearAlgebra::distributed::Vector<Number>       &vec_ki,
+                  LinearAlgebra::distributed::Vector<Number>       &solution,
                   LinearAlgebra::distributed::Vector<Number> &next_ri) const;
 
     void
@@ -399,34 +399,34 @@ namespace DGAdvection
 
     void
     apply_mass_matrix(const LinearAlgebra::distributed::Vector<Number> &src,
-                      LinearAlgebra::distributed::Vector<Number> &      dst);
+                      LinearAlgebra::distributed::Vector<Number>       &dst);
 
     void
     local_apply_inverse_mass_matrix(
-      const MatrixFree<dim, Number> &                   data,
-      LinearAlgebra::distributed::Vector<Number> &      dst,
+      const MatrixFree<dim, Number>                    &data,
+      LinearAlgebra::distributed::Vector<Number>       &dst,
       const LinearAlgebra::distributed::Vector<Number> &src,
-      const std::pair<unsigned int, unsigned int> &     cell_range) const;
+      const std::pair<unsigned int, unsigned int>      &cell_range) const;
 
     void
     local_apply_domain(
-      const MatrixFree<dim, Number> &                   data,
-      LinearAlgebra::distributed::Vector<Number> &      dst,
+      const MatrixFree<dim, Number>                    &data,
+      LinearAlgebra::distributed::Vector<Number>       &dst,
       const LinearAlgebra::distributed::Vector<Number> &src,
-      const std::pair<unsigned int, unsigned int> &     cell_range) const;
+      const std::pair<unsigned int, unsigned int>      &cell_range) const;
 
     void
     local_apply_inner_face(
-      const MatrixFree<dim, Number> &                   data,
-      LinearAlgebra::distributed::Vector<Number> &      dst,
+      const MatrixFree<dim, Number>                    &data,
+      LinearAlgebra::distributed::Vector<Number>       &dst,
       const LinearAlgebra::distributed::Vector<Number> &src,
-      const std::pair<unsigned int, unsigned int> &     cell_range) const;
+      const std::pair<unsigned int, unsigned int>      &cell_range) const;
     void
     local_apply_boundary_face(
-      const MatrixFree<dim, Number> &                   data,
-      LinearAlgebra::distributed::Vector<Number> &      dst,
+      const MatrixFree<dim, Number>                    &data,
+      LinearAlgebra::distributed::Vector<Number>       &dst,
       const LinearAlgebra::distributed::Vector<Number> &src,
-      const std::pair<unsigned int, unsigned int> &     cell_range) const;
+      const std::pair<unsigned int, unsigned int>      &cell_range) const;
   };
 
 
@@ -468,10 +468,10 @@ namespace DGAdvection
   template <int dim, int fe_degree>
   void
   AdvectionOperation<dim, fe_degree>::local_apply_domain(
-    const MatrixFree<dim, Number> &                   data,
-    LinearAlgebra::distributed::Vector<Number> &      dst,
+    const MatrixFree<dim, Number>                    &data,
+    LinearAlgebra::distributed::Vector<Number>       &dst,
     const LinearAlgebra::distributed::Vector<Number> &src,
-    const std::pair<unsigned int, unsigned int> &     cell_range) const
+    const std::pair<unsigned int, unsigned int>      &cell_range) const
   {
     FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> eval(data);
 
@@ -513,10 +513,10 @@ namespace DGAdvection
   template <int dim, int fe_degree>
   void
   AdvectionOperation<dim, fe_degree>::local_apply_inner_face(
-    const MatrixFree<dim, Number> &                   data,
-    LinearAlgebra::distributed::Vector<Number> &      dst,
+    const MatrixFree<dim, Number>                    &data,
+    LinearAlgebra::distributed::Vector<Number>       &dst,
     const LinearAlgebra::distributed::Vector<Number> &src,
-    const std::pair<unsigned int, unsigned int> &     face_range) const
+    const std::pair<unsigned int, unsigned int>      &face_range) const
   {
     // On interior faces, we have two evaluators, one for the solution
     // 'u_minus' and one for the solution 'u_plus'. Note that the decision
@@ -579,10 +579,10 @@ namespace DGAdvection
   template <int dim, int fe_degree>
   void
   AdvectionOperation<dim, fe_degree>::local_apply_boundary_face(
-    const MatrixFree<dim, Number> &                   data,
-    LinearAlgebra::distributed::Vector<Number> &      dst,
+    const MatrixFree<dim, Number>                    &data,
+    LinearAlgebra::distributed::Vector<Number>       &dst,
     const LinearAlgebra::distributed::Vector<Number> &src,
-    const std::pair<unsigned int, unsigned int> &     face_range) const
+    const std::pair<unsigned int, unsigned int>      &face_range) const
   {
     FEFaceEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> eval_minus(data,
                                                                           true);
@@ -630,10 +630,10 @@ namespace DGAdvection
   template <int dim, int fe_degree>
   void
   AdvectionOperation<dim, fe_degree>::local_apply_inverse_mass_matrix(
-    const MatrixFree<dim, Number> &                   data,
-    LinearAlgebra::distributed::Vector<Number> &      dst,
+    const MatrixFree<dim, Number>                    &data,
+    LinearAlgebra::distributed::Vector<Number>       &dst,
     const LinearAlgebra::distributed::Vector<Number> &src,
-    const std::pair<unsigned int, unsigned int> &     cell_range) const
+    const std::pair<unsigned int, unsigned int>      &cell_range) const
   {
     FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> eval(data, 0, 1);
 
@@ -657,7 +657,7 @@ namespace DGAdvection
   void
   AdvectionOperation<dim, fe_degree>::apply(
     const LinearAlgebra::distributed::Vector<Number> &src,
-    LinearAlgebra::distributed::Vector<Number> &      dst,
+    LinearAlgebra::distributed::Vector<Number>       &dst,
     const double                                      current_time)
   {
     time = current_time;
@@ -694,9 +694,9 @@ namespace DGAdvection
     const Number                                      factor_solution,
     const Number                                      factor_ai,
     const LinearAlgebra::distributed::Vector<Number> &current_ri,
-    LinearAlgebra::distributed::Vector<Number> &      vec_ki,
-    LinearAlgebra::distributed::Vector<Number> &      solution,
-    LinearAlgebra::distributed::Vector<Number> &      next_ri) const
+    LinearAlgebra::distributed::Vector<Number>       &vec_ki,
+    LinearAlgebra::distributed::Vector<Number>       &solution,
+    LinearAlgebra::distributed::Vector<Number>       &next_ri) const
   {
     time = current_time;
 
@@ -901,9 +901,9 @@ namespace DGAdvection
     perform_time_step(const Operator &pde_operator,
                       const double    current_time,
                       const double    time_step,
-                      VectorType &    solution,
-                      VectorType &    vec_ri,
-                      VectorType &    vec_ki) const
+                      VectorType     &solution,
+                      VectorType     &vec_ri,
+                      VectorType     &vec_ki) const
     {
       AssertDimension(ai.size() + 1, bi.size());
 
