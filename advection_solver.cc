@@ -398,6 +398,9 @@ namespace DGAdvection
       LinearAlgebra::distributed::Vector<Number>       &dst,
       const LinearAlgebra::distributed::Vector<Number> &src) const;
 
+    void
+    truncate_all( LinearAlgebra::distributed::Vector<Number> &dst,
+		  int digits ) const;
 
     Tensor<1, 3>
     compute_mass_and_energy(
@@ -922,6 +925,37 @@ namespace DGAdvection
       }
   }
 
+
+  
+template <int dim, int fe_degree>
+  void
+  AdvectionOperation<dim, fe_degree>::truncate_all
+   ( LinearAlgebra::distributed::Vector<Number>       &dst,
+     int digits						   ) const
+  {
+    ExactSolution<dim>                                     solution(0.);
+    FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> phi(data);
+
+#if DEAL_II_VERSION_GTE(9, 3, 0)
+    dst.zero_out_ghost_values();
+#else
+    dst.zero_out_ghosts();
+#endif
+    for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
+      {
+        phi.reinit(cell);
+        phi.read_dof_values(dst);
+
+        for (unsigned int i = 0; i < phi.dofs_per_cell; ++i)
+	  {
+	    for (unsigned int ii=0; ii<VectorizedArray<Number>::size(); ++ii)
+	      phi.begin_dof_values()[i][ii] =  Utilities::truncate_to_n_digits(phi.begin_dof_values()[i][ii], digits);
+	  }
+
+        phi.set_dof_values(dst);
+      }
+  }
+
   
 
   template <int dim, int fe_degree>
@@ -1424,6 +1458,8 @@ namespace DGAdvection
                                           solution,
                                           rk_register_1,
                                           rk_register_2);
+	// Truncate after each time step:
+	//advection_operator.truncate_all(solution,5);
         time += time_step;
         timestep_number++;
 
