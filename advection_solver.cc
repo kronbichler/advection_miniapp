@@ -393,6 +393,12 @@ namespace DGAdvection
       LinearAlgebra::distributed::Vector<Number>       &dst,
       const LinearAlgebra::distributed::Vector<Number> &src) const;
 
+    void
+    transform_to_nodal(
+      LinearAlgebra::distributed::Vector<Number>       &dst,
+      const LinearAlgebra::distributed::Vector<Number> &src) const;
+
+
     Tensor<1, 3>
     compute_mass_and_energy(
       const LinearAlgebra::distributed::Vector<Number> &vec) const;
@@ -857,6 +863,66 @@ namespace DGAdvection
   }
 
 
+  
+  template <int dim, int fe_degree>
+  void
+  AdvectionOperation<dim, fe_degree>::transform_to_nodal(
+    LinearAlgebra::distributed::Vector<Number>       &dst,
+    const LinearAlgebra::distributed::Vector<Number> &src) const
+  {
+    ExactSolution<dim>                                     solution(0.);
+    FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> phi(data);
+
+    AlignedVector<VectorizedArray<Number>> changed(phi.dofs_per_cell);
+    AlignedVector<Number> modal_to_nodal((fe_degree + 1) * (fe_degree + 1));
+    FullMatrix<double>    coefficients_1d(fe_degree + 1, fe_degree + 1);
+    const auto            legendre_basis =
+      Polynomials::Legendre::generate_complete_basis(fe_degree);
+    const auto gl_points = QGaussLobatto<1>(fe_degree + 1).get_points();
+    for (unsigned int i = 0; i < fe_degree + 1; ++i)
+      for (unsigned int j = 0; j < fe_degree + 1; ++j)
+        {
+          coefficients_1d(i, j) = legendre_basis[j].value(gl_points[i][0]);
+          modal_to_nodal[j * (fe_degree + 1) + i] = coefficients_1d(i, j);
+        }
+
+#if DEAL_II_VERSION_GTE(9, 3, 0)
+    dst.zero_out_ghost_values();
+#else
+    dst.zero_out_ghosts();
+#endif
+    for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
+      {
+        phi.reinit(cell);
+        phi.read_dof_values(src);
+
+        std::cout << "Solution in modal form: " << std::endl;
+        for (unsigned int i = 0; i < phi.dofs_per_cell; ++i)
+	  std::cout << phi.begin_dof_values()[i] << std::endl;
+	std::cout << std::endl;
+
+        internal::FEEvaluationImplBasisChange<
+          internal::EvaluatorVariant::evaluate_general,
+          internal::EvaluatorQuantity::value,
+          dim,
+          fe_degree + 1,
+          fe_degree + 1>::do_forward(1,
+				     modal_to_nodal,
+				      phi.begin_dof_values(),
+				      phi.begin_dof_values());
+
+        std::cout << "Solution in nodal form: " << std::endl;
+        for (unsigned int i = 0; i < phi.dofs_per_cell; ++i)
+	  {
+	    std::cout << phi.begin_dof_values()[i] << std::endl;
+	  }
+	std::cout << std::endl;
+
+        phi.set_dof_values(dst);
+      }
+  }
+
+  
 
   template <int dim, int fe_degree>
   Tensor<1, 3>
