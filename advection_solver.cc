@@ -791,7 +791,6 @@ namespace DGAdvection
   }
 
 
-
   template <int dim, int fe_degree>
   void
   AdvectionOperation<dim, fe_degree>::transform_to_modal(
@@ -833,23 +832,25 @@ namespace DGAdvection
 
         std::cout << "Solution in nodal form: " << std::endl;
         for (unsigned int i = 0; i < phi.dofs_per_cell; ++i)
-          std::cout << phi.begin_dof_values()[i] << std::endl;
-        std::cout << std::endl;
+	  std::cout << phi.begin_dof_values()[i] << std::endl;
+	std::cout << std::endl;
 
         internal::FEEvaluationImplBasisChange<
-          internal::EvaluatorVariant::evaluate_symmetric_hierarchical,
+          internal::EvaluatorVariant::evaluate_general,
           internal::EvaluatorQuantity::value,
           dim,
           fe_degree + 1,
           fe_degree + 1>::do_forward(1,
                                      nodal_to_modal,
                                      phi.begin_dof_values(),
-                                     changed.data());
+                                     phi.begin_dof_values());
 
-        std::cout << "Solution in modal form: " << std::endl;
-        for (const auto a : changed)
-          std::cout << a << std::endl;
-        std::cout << std::endl;
+	std::cout << "Solution in modal form: " << std::endl;
+        for (unsigned int i = 0; i < phi.dofs_per_cell; ++i)
+	  {
+	    std::cout << phi.begin_dof_values()[i] << std::endl;
+	  }
+	std::cout << std::endl;
 
         phi.set_dof_values(dst);
       }
