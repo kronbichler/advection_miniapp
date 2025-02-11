@@ -72,7 +72,7 @@ namespace DGAdvection
 
   // The polynomial degree can be selected between 0 and any reasonable number
   // (around 30), depending on the dimension and the mesh size
-  const unsigned int fe_degree = 4;
+  const unsigned int fe_degree = 5;
 
   // This parameter controls the mesh size by the number the initial mesh
   // (consisting of a single line/square/cube) is refined by doubling the
@@ -569,8 +569,8 @@ namespace DGAdvection
     using vcomplex                  = std::complex<VectorizedArray<Number>>;
 
     CellwisePreconditionerFDM(
-      const std::array<LAPACKFullMatrix<std::complex<double>>, 2> &eigenvectors,
-      const std::array<LAPACKFullMatrix<std::complex<double>>, 2>
+      const std::array<FullMatrix<std::complex<double>>, 2> &eigenvectors,
+      const std::array<FullMatrix<std::complex<double>>, 2>
         &inverse_eigenvectors,
       const std::array<std::vector<std::complex<double>>, 2> &eigenvalues,
       const VectorizedArray<Number>                  inv_jacobian_determinant,
@@ -858,7 +858,7 @@ namespace DGAdvection
     Table<2, Tensor<1, dim, VectorizedArray<Number>>> speeds_faces;
     std::vector<Table<2, VectorizedArray<Number>>>    normal_speeds_faces;
 
-    std::array<LAPACKFullMatrix<std::complex<double>>, 2> eigenvectors,
+    std::array<FullMatrix<std::complex<double>>, 2> eigenvectors,
       inverse_eigenvectors;
     std::array<std::vector<std::complex<double>>, 2>       eigenvalues;
     AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> scaled_cell_velocity;
@@ -1024,15 +1024,9 @@ namespace DGAdvection
         for (unsigned int i = 0; i < n; ++i)
           eigenvalues[c][i] = deriv_matrix.eigenvalue(i);
 
-        eigenvectors[c].reinit(n, n);
-        const auto vr = deriv_matrix.get_right_eigenvectors();
-        for (unsigned int i = 0; i < n; ++i)
-          for (unsigned int j = 0; j < n; ++j)
-            {
-              eigenvectors[c](j, i) = vr(j, i);
-            }
+        eigenvectors[c] = deriv_matrix.get_right_eigenvectors();
         inverse_eigenvectors[c] = eigenvectors[c];
-        inverse_eigenvectors[c].invert();
+        inverse_eigenvectors[c].gauss_jordan();
         for (unsigned int i = 0; i < n; ++i)
           for (unsigned int j = 0; j < n; ++j)
             inverse_eigenvectors[c](i, j) *= (1. / gauss_quad.weight(j));
@@ -1902,8 +1896,8 @@ namespace DGAdvection
         for (unsigned int j = 0; j < i; ++j)
           small_vector[i] -= matrix(i, j) / matrix(j, j) * small_vector[j];
       }
-    if (i > 0)
-      std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
+    //if (i > 0)
+    //std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
     for (unsigned int s = i; s < small_vector.size(); ++s)
       small_vector[s] = 0.;
     for (int s = i - 1; s >= 0; --s)
@@ -1943,8 +1937,8 @@ namespace DGAdvection
           break;
         small_vector[i] = tmp[i] * rhs;
       }
-    if (i > 0)
-      std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
+    //if (i > 0)
+    //std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
     for (unsigned int s = i; s < small_vector.size(); ++s)
       small_vector[s] = 0.;
     for (int s = i - 1; s >= 0; --s)
@@ -2123,8 +2117,8 @@ namespace DGAdvection
         if (matrix(i, i) < 1e-12 * matrix(0, 0) or matrix(0, 0) < 1e-30)
           break;
       }
-    if (i > 0)
-      std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
+    //if (i > 0)
+    //std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
     for (unsigned int s = i; s < small_vector.size(); ++s)
       small_vector[s] = 0.;
     for (int s = i - 1; s >= 0; --s)
