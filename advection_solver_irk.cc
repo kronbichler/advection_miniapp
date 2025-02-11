@@ -174,6 +174,7 @@ namespace DGAdvection
                                std::sin(numbers::PI * p[1]) +
                              0.2 * std::cos(20 * numbers::PI * (p[0] + 0.2)) *
                                std::sin(20 * numbers::PI * (p[1] + 0.3)));
+
       return result;
     }
 
@@ -415,9 +416,8 @@ namespace DGAdvection
   {
   public:
     CellwiseOperator(
-      const Tensor<2, dim, VectorizedArray<Number>> &jac,
-      const internal::MatrixFreeFunctions::UnivariateShapeData<
-        VectorizedArray<Number>>                    &shape,
+      const Tensor<2, dim, VectorizedArray<Number>>                    &jac,
+      const internal::MatrixFreeFunctions::UnivariateShapeData<Number> &shape,
       const Tensor<1, dim, VectorizedArray<Number>> *speed_cells,
       const Table<2, VectorizedArray<Number>>       &normal_speed_faces,
       const Quadrature<dim>                         &cell_quadrature,
@@ -535,10 +535,9 @@ namespace DGAdvection
                                        dim,
                                        fe_degree + 1,
                                        fe_degree + 1,
-                                       VectorizedArray<Number>>
-        eval(shape.shape_values_eo,
-             shape.shape_gradients_collocation_eo,
-             AlignedVector<VectorizedArray<Number>>());
+                                       VectorizedArray<Number>,
+                                       Number>
+        eval(shape.shape_values_eo, shape.shape_gradients_collocation_eo, {});
 
       // volume integrals
       for (unsigned int stage = 0; stage < n_stages; ++stage)
@@ -606,10 +605,9 @@ namespace DGAdvection
                                        dim,
                                        fe_degree + 1,
                                        fe_degree + 1,
-                                       VectorizedArray<Number>>
-        evaluator(AlignedVector<VectorizedArray<Number>>(),
-                  AlignedVector<VectorizedArray<Number>>(),
-                  shape.inverse_shape_values_eo);
+                                       VectorizedArray<Number>,
+                                       Number>
+                               evaluator({}, {}, shape.inverse_shape_values_eo);
       VectorizedArray<Number> *dst_ptr =
         reinterpret_cast<VectorizedArray<Number> *>(dst.data());
       const unsigned int dofs_per_component =
@@ -637,10 +635,9 @@ namespace DGAdvection
                                        dim,
                                        fe_degree + 1,
                                        fe_degree + 1,
-                                       VectorizedArray<Number>>
-        evaluator(AlignedVector<VectorizedArray<Number>>(),
-                  AlignedVector<VectorizedArray<Number>>(),
-                  shape.inverse_shape_values_eo);
+                                       VectorizedArray<Number>,
+                                       Number>
+        evaluator({}, {}, shape.inverse_shape_values_eo);
       const VectorizedArray<Number> *src_ptr =
         reinterpret_cast<const VectorizedArray<Number> *>(src.data());
       const unsigned int dofs_per_component =
@@ -661,9 +658,8 @@ namespace DGAdvection
     }
 
   private:
-    const Tensor<2, dim, VectorizedArray<Number>> jac;
-    const internal::MatrixFreeFunctions::UnivariateShapeData<
-      VectorizedArray<Number>>                    &shape;
+    const Tensor<2, dim, VectorizedArray<Number>>                     jac;
+    const internal::MatrixFreeFunctions::UnivariateShapeData<Number> &shape;
     const Tensor<1, dim, VectorizedArray<Number>> *speed_cells;
     const Table<2, VectorizedArray<Number>>       &normal_speed_faces;
     const Quadrature<dim>                         &cell_quadrature;
@@ -761,10 +757,9 @@ namespace DGAdvection
                                        dim,
                                        fe_degree + 1,
                                        fe_degree + 1,
-                                       VectorizedArray<Number>>
-        eval(shape.shape_values_eo,
-             shape.shape_gradients_collocation_eo,
-             AlignedVector<VectorizedArray<Number>>());
+                                       VectorizedArray<Number>,
+                                       Number>
+        eval(shape.shape_values_eo, shape.shape_gradients_collocation_eo, {});
 
       // face integrals relevant to present cell
       for (unsigned int d = 0; d < dim; ++d)
@@ -936,10 +931,9 @@ namespace DGAdvection
                                        dim,
                                        fe_degree + 1,
                                        fe_degree + 1,
-                                       VectorizedArray<Number>>
-                         evaluator(AlignedVector<VectorizedArray<Number>>(),
-                  AlignedVector<VectorizedArray<Number>>(),
-                  shape.inverse_shape_values_eo);
+                                       VectorizedArray<Number>,
+                                       Number>
+                         evaluator({}, {}, shape.inverse_shape_values_eo);
       const unsigned int dofs_per_component =
         Utilities::pow(fe_degree + 1, dim);
 
@@ -965,10 +959,9 @@ namespace DGAdvection
                                        dim,
                                        fe_degree + 1,
                                        fe_degree + 1,
-                                       VectorizedArray<Number>>
-                         evaluator(AlignedVector<VectorizedArray<Number>>(),
-                  AlignedVector<VectorizedArray<Number>>(),
-                  shape.inverse_shape_values_eo);
+                                       VectorizedArray<Number>,
+                                       Number>
+                         evaluator({}, {}, shape.inverse_shape_values_eo);
       const unsigned int dofs_per_component =
         Utilities::pow(fe_degree + 1, dim);
 
@@ -2209,14 +2202,14 @@ namespace DGAdvection
 
     // CellwisePreconditioner<n_stages, Number> precondition(
     //  data.get_mapping_info().cell_data[0].descriptor[0].quadrature, irk.A);
-    const unsigned int     n_max_iterations = 5;
-    IterationNumberControl control(n_max_iterations, 1e-14, false, false);
+    const unsigned int     n_max_iterations = 4;
+    IterationNumberControl control(n_max_iterations, 1e-18, false, false);
     typename SolverGMRES<Vector<Number>>::AdditionalData gmres_data;
     gmres_data.right_preconditioning = true;
     gmres_data.orthogonalization_strategy =
       LinearAlgebra::OrthogonalizationStrategy::classical_gram_schmidt;
-    gmres_data.max_n_tmp_vectors = n_max_iterations + 2;
-    gmres_data.batched_mode      = true;
+    gmres_data.max_basis_size = n_max_iterations;
+    gmres_data.batched_mode   = true;
     // gmres_data.exact_residual = false;
     SolverGMRES<Vector<Number>> gmres(control, memory, gmres_data);
     CellwisePreconditionerFDM<dim, fe_degree, n_stages> precondition(irk);
@@ -2247,6 +2240,7 @@ namespace DGAdvection
                             1. / time_step);
         local_operator.transform_to_collocation(eval.begin_dof_values(),
                                                 local_src);
+        local_dst = 0;
         gmres.solve(local_operator, local_dst, local_src, precondition);
         // precondition.vmult(local_dst, local_src);
         local_operator.transform_from_collocation(local_dst,
@@ -2672,7 +2666,7 @@ namespace DGAdvection
         // current matrix applied to old solutions of the linear system,
         // orthogonalized by the modified Gram-Schmidt process
         const unsigned int n_max_steps =
-          timestep_number > 3 ? 3 : timestep_number - 1;
+          timestep_number > 5 ? 5 : timestep_number - 1;
         FullMatrix<double> projection_matrix(n_max_steps, n_max_steps);
         unsigned int       step = 0;
         for (; step < n_max_steps; ++step)
@@ -2736,34 +2730,37 @@ namespace DGAdvection
 
         const double  rhs_norm = rhs.l2_norm();
         SolverControl control(200, 1e-8 * rhs_norm);
-        SolverControl control_fast(40, 1e-8 * rhs_norm);
+        SolverControl control_fast(200, 1e-8 * rhs_norm);
 
         MyVectorMemory<LinearAlgebra::distributed::BlockVector<double>> memory;
-        try
-          {
-            using SolverType =
-              SolverFGMRES<LinearAlgebra::distributed::BlockVector<Number>>;
-            typename SolverType::AdditionalData data;
-            // data.orthogonalization_strategy = SolverType::AdditionalData::
-            //   OrthogonalizationStrategy::classical_gram_schmidt;
-            // data.right_preconditioning = true;
-            //  data.exact_residual = false;
-            SolverType solver(control_fast, memory, data);
+        // try
+        //   {
+        using SolverType =
+          SolverFGMRES<LinearAlgebra::distributed::BlockVector<Number>>;
+        typename SolverType::AdditionalData data;
+        data.orthogonalization_strategy = LinearAlgebra::
+          OrthogonalizationStrategy::delayed_classical_gram_schmidt;
+        // data.right_preconditioning = true;
+        //  data.exact_residual = false;
+        SolverType solver(control_fast, memory, data);
 
-            solver.solve(advection_operator, stage_sol[0], rhs, precondition);
-          }
-        catch (SolverControl::NoConvergence &)
-          {
-            typename SolverGMRES<
-              LinearAlgebra::distributed::BlockVector<Number>>::AdditionalData
-              data;
-            data.right_preconditioning = true;
-            data.max_n_tmp_vectors     = 20;
-            SolverGMRES<LinearAlgebra::distributed::BlockVector<Number>> solver(
-              control, memory, data);
+        solver.solve(advection_operator, stage_sol[0], rhs, precondition);
+        /*  }
+    catch (SolverControl::NoConvergence &)
+      {
+        typename SolverGMRES<
+          LinearAlgebra::distributed::BlockVector<Number>>::AdditionalData
+          data;
+        data.right_preconditioning      = true;
+        data.orthogonalization_strategy = LinearAlgebra::
+          OrthogonalizationStrategy::delayed_classical_gram_schmidt;
+        data.max_n_tmp_vectors = 20;
+        SolverGMRES<LinearAlgebra::distributed::BlockVector<Number>> solver(
+          control, memory, data);
 
-            solver.solve(advection_operator, stage_sol[0], rhs, precondition);
-          }
+        solver.solve(advection_operator, stage_sol[0], rhs, precondition);
+      }
+        */
         const double my_time = timer.wall_time();
 
         advection_operator.update_solution(solution, stage_sol[0]);
@@ -2784,7 +2781,10 @@ namespace DGAdvection
             pcout << " n iter "
                   << control.last_step() + control_fast.last_step() << " "
                   << rhs_norm << " " << control_fast.initial_value() << " "
-                  << control_fast.last_value() << std::endl;
+                  << control_fast.last_value();
+            for (unsigned int s = 0; s < step; ++s)
+              pcout << " " << project_sol[s];
+            pcout << std::endl;
           }
         if (false)
           {
