@@ -1024,7 +1024,7 @@ namespace DGAdvection
         for (unsigned int i = 0; i < n; ++i)
           eigenvalues[c][i] = deriv_matrix.eigenvalue(i);
 
-        eigenvectors[c] = deriv_matrix.get_right_eigenvectors();
+        eigenvectors[c]         = deriv_matrix.get_right_eigenvectors();
         inverse_eigenvectors[c] = eigenvectors[c];
         inverse_eigenvectors[c].gauss_jordan();
         for (unsigned int i = 0; i < n; ++i)
@@ -1896,8 +1896,8 @@ namespace DGAdvection
         for (unsigned int j = 0; j < i; ++j)
           small_vector[i] -= matrix(i, j) / matrix(j, j) * small_vector[j];
       }
-    //if (i > 0)
-    //std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
+    // if (i > 0)
+    // std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
     for (unsigned int s = i; s < small_vector.size(); ++s)
       small_vector[s] = 0.;
     for (int s = i - 1; s >= 0; --s)
@@ -1937,8 +1937,8 @@ namespace DGAdvection
           break;
         small_vector[i] = tmp[i] * rhs;
       }
-    //if (i > 0)
-    //std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
+    // if (i > 0)
+    // std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
     for (unsigned int s = i; s < small_vector.size(); ++s)
       small_vector[s] = 0.;
     for (int s = i - 1; s >= 0; --s)
@@ -2117,8 +2117,8 @@ namespace DGAdvection
         if (matrix(i, i) < 1e-12 * matrix(0, 0) or matrix(0, 0) < 1e-30)
           break;
       }
-    //if (i > 0)
-    //std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
+    // if (i > 0)
+    // std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
     for (unsigned int s = i; s < small_vector.size(); ++s)
       small_vector[s] = 0.;
     for (int s = i - 1; s >= 0; --s)
