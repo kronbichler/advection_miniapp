@@ -121,7 +121,7 @@ namespace DGAdvection
 
   // Enable or disable writing of result files for visualization with ParaView
   // or VisIt
-  const bool print_vtu = true;
+  const bool print_vtu = false;
 
 
   // Analytical solution of the problem
@@ -305,9 +305,8 @@ namespace DGAdvection
   {
   public:
     CellwiseOperator(
-      const Tensor<2, dim, VectorizedArray<Number>> &jac,
-      const internal::MatrixFreeFunctions::UnivariateShapeData<
-        VectorizedArray<Number>>                    &shape,
+      const Tensor<2, dim, VectorizedArray<Number>>                    &jac,
+      const internal::MatrixFreeFunctions::UnivariateShapeData<Number> &shape,
       const Tensor<1, dim, VectorizedArray<Number>> *speed_cells,
       const Table<2, VectorizedArray<Number>>       &normal_speed_faces,
       const Quadrature<dim>                         &cell_quadrature,
@@ -405,10 +404,11 @@ namespace DGAdvection
                                        dim,
                                        fe_degree + 1,
                                        fe_degree + 1,
-                                       VectorizedArray<Number>>
+                                       VectorizedArray<Number>,
+                                       Number>
         eval(shape.shape_values_eo,
              shape.shape_gradients_collocation_eo,
-             AlignedVector<VectorizedArray<Number>>());
+             AlignedVector<Number>());
 
       // volume integrals
       eval.template gradients<0, true, false>(src_ptr, gradients[0]);
@@ -454,9 +454,10 @@ namespace DGAdvection
                                        dim,
                                        fe_degree + 1,
                                        fe_degree + 1,
-                                       VectorizedArray<Number>>
-        evaluator(AlignedVector<VectorizedArray<Number>>(),
-                  AlignedVector<VectorizedArray<Number>>(),
+                                       VectorizedArray<Number>,
+                                       Number>
+                               evaluator(AlignedVector<Number>(),
+                  AlignedVector<Number>(),
                   shape.inverse_shape_values_eo);
       VectorizedArray<Number> *dst_ptr =
         reinterpret_cast<VectorizedArray<Number> *>(dst.data());
@@ -480,9 +481,10 @@ namespace DGAdvection
                                        dim,
                                        fe_degree + 1,
                                        fe_degree + 1,
-                                       VectorizedArray<Number>>
-        evaluator(AlignedVector<VectorizedArray<Number>>(),
-                  AlignedVector<VectorizedArray<Number>>(),
+                                       VectorizedArray<Number>,
+                                       Number>
+                                     evaluator(AlignedVector<Number>(),
+                  AlignedVector<Number>(),
                   shape.inverse_shape_values_eo);
       const VectorizedArray<Number> *src_ptr =
         reinterpret_cast<const VectorizedArray<Number> *>(src.data());
@@ -499,9 +501,8 @@ namespace DGAdvection
     }
 
   private:
-    const Tensor<2, dim, VectorizedArray<Number>> jac;
-    const internal::MatrixFreeFunctions::UnivariateShapeData<
-      VectorizedArray<Number>>                    &shape;
+    const Tensor<2, dim, VectorizedArray<Number>>                     jac;
+    const internal::MatrixFreeFunctions::UnivariateShapeData<Number> &shape;
     const Tensor<1, dim, VectorizedArray<Number>> *speed_cells;
     const Table<2, VectorizedArray<Number>>       &normal_speed_faces;
     const Quadrature<dim>                         &cell_quadrature;
@@ -1868,6 +1869,276 @@ namespace DGAdvection
   };
 
 
+
+  template <typename OperatorType, typename VectorType>
+  std::array<double, 5>
+  compute_least_squares_fit_neq(OperatorType const            &op,
+                                std::vector<VectorType> const &vectors,
+                                VectorType const              &rhs)
+  {
+    using Number = typename VectorType::value_type;
+    std::vector<VectorType>    tmp(vectors.size());
+    dealii::FullMatrix<double> matrix(vectors.size(), vectors.size());
+    AssertThrow(vectors.size() == 5, ExcNotImplemented());
+    std::array<Number, 5> small_vector = {};
+    unsigned int          i            = 0;
+    for (; i < vectors.size(); ++i)
+      {
+        tmp[i].reinit(vectors[0], true);
+        op.vmult(tmp[i], vectors[i]);
+        for (unsigned int j = 0; j <= i; ++j)
+          matrix(i, j) = tmp[i] * tmp[j];
+
+        // compute row and column of Cholesky factorization
+        for (unsigned int j = 0; j < i; ++j)
+          {
+            double inv_entry = matrix(i, j) / matrix(j, j);
+            for (unsigned int k = j + 1; k <= i; ++k)
+              matrix(i, k) -= matrix(k, j) * inv_entry;
+          }
+        if (matrix(i, i) < 1e-12 * matrix(0, 0) or matrix(0, 0) < 1e-30)
+          break;
+        small_vector[i] = tmp[i] * rhs;
+        for (unsigned int j = 0; j < i; ++j)
+          small_vector[i] -= matrix(i, j) / matrix(j, j) * small_vector[j];
+      }
+    if (i > 0)
+      std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
+    for (unsigned int s = i; s < small_vector.size(); ++s)
+      small_vector[s] = 0.;
+    for (int s = i - 1; s >= 0; --s)
+      {
+        double sum = small_vector[s];
+        for (unsigned int j = s + 1; j < i; ++j)
+          sum -= small_vector[j] * matrix(j, s);
+        small_vector[s] = sum / matrix(s, s);
+      }
+    return small_vector;
+  }
+
+
+
+  template <typename OperatorType, typename VectorType>
+  std::array<double, 5>
+  compute_least_squares_fit_mgs(OperatorType const            &op,
+                                std::vector<VectorType> const &vectors,
+                                VectorType const              &rhs)
+  {
+    using Number = typename VectorType::value_type;
+    std::vector<VectorType>    tmp(vectors.size());
+    dealii::FullMatrix<double> matrix(vectors.size(), vectors.size());
+    AssertThrow(vectors.size() == 5, ExcNotImplemented());
+    std::array<Number, 5> small_vector = {};
+    unsigned int          i            = 0;
+    for (; i < vectors.size(); ++i)
+      {
+        tmp[i].reinit(vectors[0], true);
+        op.vmult(tmp[i], vectors[i]);
+        matrix(0, i) = tmp[i] * tmp[0];
+        for (unsigned int j = 0; j < i; ++j)
+          matrix(j + 1, i) = tmp[i].add_and_dot(-matrix(j, i) / matrix(j, j),
+                                                tmp[j],
+                                                tmp[j + 1]);
+        if (matrix(i, i) < 1e-12 * matrix(0, 0) or matrix(0, 0) < 1e-30)
+          break;
+        small_vector[i] = tmp[i] * rhs;
+      }
+    if (i > 0)
+      std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
+    for (unsigned int s = i; s < small_vector.size(); ++s)
+      small_vector[s] = 0.;
+    for (int s = i - 1; s >= 0; --s)
+      {
+        double sum = small_vector[s];
+        for (unsigned int j = s + 1; j < i; ++j)
+          sum -= small_vector[j] * matrix(s, j);
+        small_vector[s] = sum / matrix(s, s);
+      }
+    return small_vector;
+  }
+
+
+
+  template <typename OperatorType, typename VectorType>
+  std::array<double, 5>
+  compute_least_squares_fit_cgs(OperatorType const            &op,
+                                std::vector<VectorType> const &vectors,
+                                VectorType const              &rhs)
+  {
+    using Number = typename VectorType::value_type;
+    std::vector<VectorType>    tmp(vectors.size());
+    dealii::FullMatrix<double> matrix(vectors.size(), vectors.size());
+    AssertThrow(vectors.size() == 5, ExcNotImplemented());
+    std::array<Number, 5> small_vector = {};
+    unsigned int          i            = 0;
+    for (; i < vectors.size(); ++i)
+      {
+        tmp[i].reinit(vectors[0], true);
+        op.vmult(tmp[i], vectors[i]);
+
+        std::array<Number *, 11> vec_ptrs = {};
+        for (unsigned int j = 0; j <= i; ++j)
+          vec_ptrs[j] = tmp[j].begin();
+
+        constexpr unsigned int n_lanes =
+          dealii::VectorizedArray<Number>::size();
+        constexpr unsigned int n_lanes_4 = 4 * n_lanes;
+        const unsigned int     regular_size_4 =
+          (vectors[0].locally_owned_size()) / n_lanes_4 * n_lanes_4;
+        const unsigned int regular_size =
+          (vectors[0].locally_owned_size()) / n_lanes * n_lanes;
+
+        std::array<Number, 10> current_mji;
+
+        // compute inner products in Gram-Schmidt process
+        if (i > 0)
+          {
+            std::array<dealii::VectorizedArray<Number>, 10> local_sums = {};
+
+            unsigned int k = 0;
+            for (; k < regular_size_4; k += n_lanes_4)
+              {
+                dealii::VectorizedArray<Number> v_k_0, v_k_1, v_k_2, v_k_3;
+                v_k_0.load(vec_ptrs[i] + k);
+                v_k_1.load(vec_ptrs[i] + k + n_lanes);
+                v_k_2.load(vec_ptrs[i] + k + 2 * n_lanes);
+                v_k_3.load(vec_ptrs[i] + k + 3 * n_lanes);
+                for (unsigned int j = 0; j < i; ++j)
+                  {
+                    dealii::VectorizedArray<Number> v_j_k, tmp0;
+                    v_j_k.load(vec_ptrs[j] + k);
+                    tmp0 = v_k_0 * v_j_k;
+                    v_j_k.load(vec_ptrs[j] + k + n_lanes);
+                    tmp0 += v_k_1 * v_j_k;
+                    v_j_k.load(vec_ptrs[j] + k + 2 * n_lanes);
+                    tmp0 += v_k_2 * v_j_k;
+                    v_j_k.load(vec_ptrs[j] + k + 3 * n_lanes);
+                    tmp0 += v_k_3 * v_j_k;
+                    local_sums[j] += tmp0;
+                  }
+              }
+            for (; k < regular_size; k += n_lanes)
+              {
+                dealii::VectorizedArray<Number> v_k;
+                v_k.load(vec_ptrs[i] + k);
+                for (unsigned int j = 0; j < i; ++j)
+                  {
+                    dealii::VectorizedArray<Number> v_j_k;
+                    v_j_k.load(vec_ptrs[j] + k);
+                    local_sums[j] += v_k * v_j_k;
+                  }
+              }
+            for (; k < vectors[0].locally_owned_size(); ++k)
+              for (unsigned int j = 0; j < i; ++j)
+                local_sums[j][0] += vec_ptrs[i][k] * vec_ptrs[j][k];
+            std::array<Number, 10> scalar_sums;
+            for (unsigned int j = 0; j < i; ++j)
+              scalar_sums[j] = local_sums[j].sum();
+
+            dealii::Utilities::MPI::sum(
+              dealii::ArrayView<const Number>(scalar_sums.data(), i),
+              vectors[0].get_mpi_communicator(),
+              dealii::ArrayView<Number>(scalar_sums.data(), i));
+            for (unsigned int j = 0; j < i; ++j)
+              current_mji[j] = scalar_sums[j] / matrix(j, j);
+          }
+
+        // Update vector, compute its norm (for normalization in classical
+        // Gram-Schmidt) and multiply with right hand side for right-hand side
+        // of least squares problem
+        dealii::VectorizedArray<Number> local_sum_i = {}, local_sum_rhs = {};
+        unsigned int                    k       = 0;
+        const Number                   *rhs_ptr = rhs.begin();
+        for (; k < regular_size_4; k += n_lanes_4)
+          {
+            dealii::VectorizedArray<Number> v_k_0, v_k_1, v_k_2, v_k_3;
+            v_k_0.load(vec_ptrs[i] + k);
+            v_k_1.load(vec_ptrs[i] + k + n_lanes);
+            v_k_2.load(vec_ptrs[i] + k + 2 * n_lanes);
+            v_k_3.load(vec_ptrs[i] + k + 3 * n_lanes);
+            for (unsigned int j = 0; j < i; ++j)
+              {
+                const Number                    m_ji = current_mji[j];
+                dealii::VectorizedArray<Number> v_j_k;
+                v_j_k.load(vec_ptrs[j] + k);
+                v_k_0 -= m_ji * v_j_k;
+                v_j_k.load(vec_ptrs[j] + k + n_lanes);
+                v_k_1 -= m_ji * v_j_k;
+                v_j_k.load(vec_ptrs[j] + k + 2 * n_lanes);
+                v_k_2 -= m_ji * v_j_k;
+                v_j_k.load(vec_ptrs[j] + k + 3 * n_lanes);
+                v_k_3 -= m_ji * v_j_k;
+              }
+            local_sum_i +=
+              v_k_0 * v_k_0 + v_k_1 * v_k_1 + v_k_2 * v_k_2 + v_k_3 * v_k_3;
+            dealii::VectorizedArray<Number> rhs_k, tmp0;
+            rhs_k.load(rhs_ptr + k);
+            tmp0 = rhs_k * v_k_0;
+            v_k_0.store(vec_ptrs[i] + k);
+            rhs_k.load(rhs_ptr + k + n_lanes);
+            tmp0 += rhs_k * v_k_1;
+            v_k_1.store(vec_ptrs[i] + k + n_lanes);
+            rhs_k.load(rhs_ptr + k + 2 * n_lanes);
+            tmp0 += rhs_k * v_k_2;
+            v_k_2.store(vec_ptrs[i] + k + 2 * n_lanes);
+            rhs_k.load(rhs_ptr + k + 3 * n_lanes);
+            tmp0 += rhs_k * v_k_3;
+            v_k_3.store(vec_ptrs[i] + k + 3 * n_lanes);
+            local_sum_rhs += tmp0;
+          }
+        for (; k < regular_size; k += n_lanes)
+          {
+            dealii::VectorizedArray<Number> v_k;
+            v_k.load(vec_ptrs[i] + k);
+            for (unsigned int j = 0; j < i; ++j)
+              {
+                dealii::VectorizedArray<Number> v_j_k;
+                v_j_k.load(vec_ptrs[j] + k);
+                v_k -= current_mji[j] * v_j_k;
+              }
+            local_sum_i += v_k * v_k;
+            dealii::VectorizedArray<Number> rhs_k;
+            rhs_k.load(rhs_ptr + k);
+            local_sum_rhs += v_k * rhs_k;
+            v_k.store(vec_ptrs[i] + k);
+          }
+        for (; k < vectors[0].locally_owned_size(); ++k)
+          {
+            for (unsigned int j = 0; j < i; ++j)
+              vec_ptrs[i][k] -= current_mji[j] * vec_ptrs[j][k];
+            local_sum_i[0] += vec_ptrs[i][k] * vec_ptrs[i][k];
+            local_sum_rhs[0] += rhs_ptr[k] * vec_ptrs[i][k];
+          }
+        std::array<Number, 2> scalar_sums{
+          {local_sum_i.sum(), local_sum_rhs.sum()}};
+        dealii::Utilities::MPI::sum(
+          dealii::ArrayView<const Number>(scalar_sums.data(), 2),
+          vectors[0].get_mpi_communicator(),
+          dealii::ArrayView<Number>(scalar_sums.data(), 2));
+        for (unsigned int j = 0; j < i; ++j)
+          matrix(j, i) = current_mji[j];
+        matrix(i, i)    = scalar_sums[0];
+        small_vector[i] = scalar_sums[1] / scalar_sums[0];
+
+        if (matrix(i, i) < 1e-12 * matrix(0, 0) or matrix(0, 0) < 1e-30)
+          break;
+      }
+    if (i > 0)
+      std::cout << std::setprecision(8) << matrix(i - 1, i - 1) << "  ";
+    for (unsigned int s = i; s < small_vector.size(); ++s)
+      small_vector[s] = 0.;
+    for (int s = i - 1; s >= 0; --s)
+      {
+        double sum = small_vector[s];
+        for (unsigned int j = s + 1; j < i; ++j)
+          sum -= small_vector[j] * matrix(s, j);
+        small_vector[s] = sum;
+      }
+    return small_vector;
+  }
+
+
+
   template <int dim>
   void
   AdvectionProblem<dim>::run()
@@ -1926,38 +2197,8 @@ namespace DGAdvection
         // Compute upper triangular matrix with orthogonal factors of the
         // current matrix applied to old solutions of the linear system,
         // orthogonalized by the modified Gram-Schmidt process
-        const unsigned int n_max_steps =
-          timestep_number > 5 ? 5 : timestep_number - 1;
-        FullMatrix<double> projection_matrix(n_max_steps, n_max_steps);
-        unsigned int       step = 0;
-        for (; step < n_max_steps; ++step)
-          {
-            advection_operator.vmult(stage_mv[step], stage_sol[step]);
-            projection_matrix(0, step) = stage_mv[step] * stage_mv[0];
-            for (unsigned int j = 0; j < step; ++j)
-              projection_matrix(j + 1, step) =
-                stage_mv[step].add_and_dot(-projection_matrix(j, step) /
-                                             projection_matrix(j, j),
-                                           stage_mv[j],
-                                           stage_mv[j + 1]);
-
-            // Note that the entries in the matrix are the square of the norm,
-            // so we request that vectors which are below 1e-8 of being
-            // linearly independent are discarded
-            if (projection_matrix(step, step) < 1e-16 * projection_matrix(0, 0))
-              break;
-          }
-        // Solve least-squares system
-        std::array<double, 5> project_sol = {};
-        for (unsigned int s = 0; s < step; ++s)
-          project_sol[s] = stage_mv[s] * rhs;
-        for (int s = step - 1; s >= 0; --s)
-          {
-            double sum = project_sol[s];
-            for (unsigned int j = s + 1; j < step; ++j)
-              sum -= project_sol[j] * projection_matrix(s, j);
-            project_sol[s] = sum / projection_matrix(s, s);
-          }
+        const std::array<double, 5> project_sol =
+          compute_least_squares_fit_neq(advection_operator, stage_sol, rhs);
 
         // extrapolate solution from old values
         const unsigned int      local_size = stage_sol[0].locally_owned_size();
@@ -1972,14 +2213,12 @@ namespace DGAdvection
             const double sol_2 = vec_ptrs[2][i];
             const double sol_3 = vec_ptrs[3][i];
             const double sol_4 = vec_ptrs[4][i];
-            vec_ptrs[0][i] = project_sol[0] * sol_0 + project_sol[1] * sol_1 +
+            vec_ptrs[4][i] = project_sol[0] * sol_0 + project_sol[1] * sol_1 +
                              project_sol[2] * sol_2 + project_sol[3] * sol_3 +
                              project_sol[4] * sol_4;
-            vec_ptrs[1][i] = sol_0;
-            vec_ptrs[2][i] = sol_1;
-            vec_ptrs[3][i] = sol_2;
-            vec_ptrs[4][i] = sol_3;
           }
+        for (unsigned int i = 4; i > 0; --i)
+          std::swap(stage_sol[i], stage_sol[i - 1]);
 
         prep_time += timer.wall_time();
         timer.restart();
@@ -2029,7 +2268,10 @@ namespace DGAdvection
             pcout << " n iter "
                   << control.last_step() + control_fast.last_step() << " "
                   << rhs_norm << " " << control_fast.initial_value() << " "
-                  << control_fast.last_value() << std::endl;
+                  << control_fast.last_value();
+            for (const double s : project_sol)
+              pcout << " " << s;
+            pcout << std::endl;
           }
         output_time += timer.wall_time();
       }
