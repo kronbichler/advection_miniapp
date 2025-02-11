@@ -589,7 +589,7 @@ namespace DGAdvection
         for (unsigned int i1 = 0; i1 < (dim > 1 ? n : 1); ++i1)
           for (unsigned int i0 = 0; i0 < n; ++i0, ++c)
             {
-              std::array<unsigned int, 3>           indices{i0, i1, i2};
+              std::array<unsigned int, 3>           indices{{i0, i1, i2}};
               std::complex<VectorizedArray<Number>> diagonal_element =
                 make_vectorized_array<Number>(inv_dt);
               for (unsigned int d = 0; d < dim; ++d)
