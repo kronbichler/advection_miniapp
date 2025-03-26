@@ -45,6 +45,7 @@
 #include <deal.II/lac/solver_bicgstab.h>
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/solver_idr.h>
+#include <deal.II/lac/sparse_matrix.h>
 
 #include <deal.II/matrix_free/fe_evaluation.h>
 #include <deal.II/matrix_free/matrix_free.h>
@@ -103,7 +104,7 @@ namespace DGAdvection
 
   // Switch to change between a conservative formulation of the advection term
   // (factor 0) or a skew-symmetric one (factor 0.5)
-  const double factor_skew = 0.0;
+  const double factor_skew = 0.5;
 
   // Switch to enable Gauss-Lobatto quadrature (true) or Gauss quadrature
   // (false)
@@ -493,14 +494,16 @@ namespace DGAdvection
     static constexpr unsigned int n = fe_degree + 1;
     using vcomplex                  = std::complex<VectorizedArray<Number>>;
 
-    CellwisePreconditionerFDM(
-      const std::array<FullMatrix<std::complex<double>>, 2> &eigenvectors,
-      const std::array<FullMatrix<std::complex<double>>, 2>
-        &inverse_eigenvectors,
-      const std::array<std::vector<std::complex<double>>, 2> &eigenvalues,
-      const VectorizedArray<Number>                  inv_jacobian_determinant,
-      const Tensor<1, dim, VectorizedArray<Number>> &average_velocity,
-      const double                                   inv_dt)
+    CellwisePreconditionerFDM() = default;
+
+    void
+    reinit(const std::array<FullMatrix<std::complex<double>>, 2> &eigenvectors,
+           const std::array<FullMatrix<std::complex<double>>, 2>
+             &inverse_eigenvectors,
+           const std::array<std::vector<std::complex<double>>, 2> &eigenvalues,
+           const VectorizedArray<Number> inv_jacobian_determinant,
+           const Tensor<1, dim, VectorizedArray<Number>> &average_velocity,
+           const double                                   inv_dt)
     {
       Tensor<1, dim, VectorizedArray<Number>> blend_factor_eig;
       for (unsigned int d = 0; d < dim; ++d)
@@ -652,7 +655,9 @@ namespace DGAdvection
     using Number = double;
 
     AdvectionOperation()
-      : computing_times(4)
+      : time(0.)
+      , time_step(0.)
+      , computing_times(4)
     {}
 
     void
@@ -771,7 +776,7 @@ namespace DGAdvection
     mutable std::vector<double> computing_times;
 
     Table<2, Tensor<1, dim, VectorizedArray<Number>>> speeds_cells;
-    Table<2, Tensor<1, dim, VectorizedArray<Number>>> speeds_faces;
+    Table<2, VectorizedArray<Number>>                 speeds_faces;
     std::vector<Table<2, VectorizedArray<Number>>>    normal_speeds_faces;
 
     std::array<FullMatrix<std::complex<double>>, 2> eigenvectors,
@@ -802,17 +807,26 @@ namespace DGAdvection
     void
     apply_cell_eval(FEEvaluation<dim, -1, 0, 1, Number> &eval) const
     {
-      const unsigned int cell = eval.get_current_cell_index();
-
-      const double inv_dt = 1. / time_step;
       const Number factor_time =
         std::cos(numbers::PI * (time + time_step) / FINAL_TIME);
 
-      eval.gather_evaluate(EvaluationFlags::values |
-                           EvaluationFlags::gradients);
+      eval.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
+
+      evaluate_on_cell(factor_time, eval);
+
+      // multiply by nabla v^h(x) and sum
+      eval.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
+    }
+
+    template <typename CellEvalType>
+    void
+    evaluate_on_cell(const Number factor_time, CellEvalType &eval) const
+    {
+      const unsigned int cell   = eval.get_current_cell_index();
+      const double       inv_dt = time_step == 0 ? 0. : 1. / time_step;
 
       // loop over quadrature points and compute the local volume flux
-      for (unsigned int q = 0; q < eval.n_q_points; ++q)
+      for (const unsigned int q : eval.quadrature_point_indices())
         {
           const auto                              speed = speeds_cells(cell, q);
           const auto                              u     = eval.get_value(q);
@@ -824,34 +838,41 @@ namespace DGAdvection
             ((factor_skew * speed) * gradu) * factor_time + inv_dt * u;
           eval.submit_value(volume_val, q);
         }
-
-      // multiply by nabla v^h(x) and sum
-      eval.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
     }
 
     void
     apply_face_eval(FEFaceEvaluation<dim, -1, 0, 1, Number> &eval_minus,
                     FEFaceEvaluation<dim, -1, 0, 1, Number> &eval_plus) const
     {
-      const unsigned int face = eval_minus.get_current_cell_index();
-      const Number       factor_time =
+      const Number factor_time =
         std::cos(numbers::PI * (time + time_step) / FINAL_TIME);
 
       eval_minus.evaluate(EvaluationFlags::values);
       eval_plus.evaluate(EvaluationFlags::values);
 
-      for (unsigned int q = 0; q < eval_minus.n_q_points; ++q)
+      evaluate_on_face(factor_time, eval_minus, eval_plus);
+
+      eval_minus.integrate(EvaluationFlags::values);
+      eval_plus.integrate(EvaluationFlags::values);
+    }
+
+    template <typename FaceEvalType>
+    void
+    evaluate_on_face(const Number  factor_time,
+                     FaceEvalType &eval_minus,
+                     FaceEvalType &eval_plus) const
+    {
+      const unsigned int face = eval_minus.get_current_cell_index();
+      for (const unsigned int q : eval_minus.quadrature_point_indices())
         {
-          const auto speed               = speeds_faces(face, q);
-          const auto u_minus             = eval_minus.get_value(q);
-          const auto u_plus              = eval_plus.get_value(q);
-          const auto normal_vector_minus = eval_minus.get_normal_vector(q);
+          const auto speed   = speeds_faces(face, q);
+          const auto u_minus = eval_minus.get_value(q);
+          const auto u_plus  = eval_plus.get_value(q);
 
           VectorizedArray<Number> flux_minus;
           VectorizedArray<Number> flux_plus;
-          const auto              normal_times_speed =
-            (speed * normal_vector_minus) * factor_time;
-          const auto flux_times_normal_of_u_minus =
+          const auto              normal_times_speed = speed * factor_time;
+          const auto              flux_times_normal_of_u_minus =
             0.5 *
             ((u_minus + u_plus) * normal_times_speed +
              flux_alpha * std::abs(normal_times_speed) * (u_minus - u_plus));
@@ -863,35 +884,40 @@ namespace DGAdvection
           eval_minus.submit_value(flux_minus, q);
           eval_plus.submit_value(flux_plus, q);
         }
-
-      eval_minus.integrate(EvaluationFlags::values);
-      eval_plus.integrate(EvaluationFlags::values);
     }
 
     void
     apply_boundary_eval(
       FEFaceEvaluation<dim, -1, 0, 1, Number> &eval_minus) const
     {
-      const unsigned int face = eval_minus.get_current_cell_index();
-      ExactSolution<dim> solution(time + time_step);
-      const Number       factor_time =
+      const Number factor_time =
         std::cos(numbers::PI * (time * time_step) / FINAL_TIME);
 
       eval_minus.evaluate(EvaluationFlags::values);
 
+      evaluate_on_face(factor_time, eval_minus);
+
+      eval_minus.integrate(EvaluationFlags::values);
+    }
+
+    template <typename FaceEvalType>
+    void
+    evaluate_on_face(const Number factor_time, FaceEvalType &eval_minus) const
+    {
+      ExactSolution<dim> solution(time + time_step);
+      const unsigned int face = eval_minus.get_current_cell_index();
       for (unsigned int q = 0; q < eval_minus.n_q_points; ++q)
         {
           const auto speed = speeds_faces(face, q);
           // Dirichlet boundary
-          const auto u_minus       = eval_minus.get_value(q);
-          const auto normal_vector = eval_minus.get_normal_vector(q);
+          const auto u_minus = eval_minus.get_value(q);
 
           // Compute the outer solution value
           VectorizedArray<Number> flux;
           const auto u_plus = solution.value(eval_minus.quadrature_point(q));
 
           // compute the flux
-          const auto normal_times_speed = (normal_vector * speed) * factor_time;
+          const auto normal_times_speed = speed * factor_time;
           const auto flux_times_normal =
             0.5 *
             ((u_minus + u_plus) * normal_times_speed +
@@ -901,8 +927,6 @@ namespace DGAdvection
 
           eval_minus.submit_value(flux, q);
         }
-
-      eval_minus.integrate(EvaluationFlags::values);
     }
   };
 
@@ -966,6 +990,7 @@ namespace DGAdvection
           eval.reinit(face);
           for (unsigned int q = 0; q < eval.n_q_points; ++q)
             speeds_faces(face, q) =
+              eval.normal_vector(q) *
               transport_speed.value(eval.quadrature_point(q));
         }
 
@@ -1061,7 +1086,6 @@ namespace DGAdvection
     const std::pair<unsigned int, unsigned int>      &cell_range) const
   {
     FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> eval(data);
-    const double inv_dt = time_step == 0 ? 0. : 1. / time_step;
 
     const Number factor_time =
       std::cos(numbers::PI * (time + time_step) / FINAL_TIME);
@@ -1075,19 +1099,7 @@ namespace DGAdvection
                              EvaluationFlags::values |
                                EvaluationFlags::gradients);
 
-        // loop over quadrature points and compute the local volume flux
-        for (unsigned int q = 0; q < eval.n_q_points; ++q)
-          {
-            const auto speed = speeds_cells(cell, q);
-            const auto u     = eval.get_value(q);
-            const auto gradu = eval.get_gradient(q);
-            Tensor<1, dim, VectorizedArray<Number>> volume_flux =
-              ((-1.0 + factor_skew) * speed) * (factor_time * u);
-            eval.submit_gradient(volume_flux, q);
-            VectorizedArray<Number> volume_val =
-              ((factor_skew * speed) * gradu) * factor_time + inv_dt * u;
-            eval.submit_value(volume_val, q);
-          }
+        evaluate_on_cell(factor_time, eval);
 
         // multiply by nabla v^h(x) and sum
         eval.integrate_scatter(EvaluationFlags::values |
@@ -1126,29 +1138,7 @@ namespace DGAdvection
         eval_minus.gather_evaluate(src, EvaluationFlags::values);
         eval_plus.gather_evaluate(src, EvaluationFlags::values);
 
-        for (unsigned int q = 0; q < eval_minus.n_q_points; ++q)
-          {
-            const auto speed               = speeds_faces(face, q);
-            const auto u_minus             = eval_minus.get_value(q);
-            const auto u_plus              = eval_plus.get_value(q);
-            const auto normal_vector_minus = eval_minus.get_normal_vector(q);
-
-            VectorizedArray<Number> flux_minus;
-            VectorizedArray<Number> flux_plus;
-            const auto              normal_times_speed =
-              (speed * normal_vector_minus) * factor_time;
-            const auto flux_times_normal_of_u_minus =
-              0.5 *
-              ((u_minus + u_plus) * normal_times_speed +
-               flux_alpha * std::abs(normal_times_speed) * (u_minus - u_plus));
-            flux_minus = flux_times_normal_of_u_minus -
-                         factor_skew * normal_times_speed * u_minus;
-            flux_plus = -flux_times_normal_of_u_minus +
-                        factor_skew * normal_times_speed * u_plus;
-
-            eval_minus.submit_value(flux_minus, q);
-            eval_plus.submit_value(flux_plus, q);
-          }
+        evaluate_on_face(factor_time, eval_minus, eval_plus);
 
         eval_minus.integrate_scatter(EvaluationFlags::values, dst);
         eval_plus.integrate_scatter(EvaluationFlags::values, dst);
@@ -1168,8 +1158,7 @@ namespace DGAdvection
     AssertThrow(false, ExcNotImplemented());
     FEFaceEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> eval_minus(data,
                                                                           true);
-    ExactSolution<dim> solution(time + time_step);
-    const Number       factor_time =
+    const Number                                               factor_time =
       std::cos(numbers::PI * (time * time_step) / FINAL_TIME);
 
     for (unsigned int face = face_range.first; face < face_range.second; face++)
@@ -1177,30 +1166,7 @@ namespace DGAdvection
         eval_minus.reinit(face);
         eval_minus.gather_evaluate(src, EvaluationFlags::values);
 
-        for (unsigned int q = 0; q < eval_minus.n_q_points; ++q)
-          {
-            const auto speed = speeds_faces(face, q);
-            // Dirichlet boundary
-            const auto u_minus       = eval_minus.get_value(q);
-            const auto normal_vector = eval_minus.get_normal_vector(q);
-
-            // Compute the outer solution value
-            VectorizedArray<Number> flux;
-            const auto u_plus = solution.value(eval_minus.quadrature_point(q));
-
-            // compute the flux
-            const auto normal_times_speed =
-              (normal_vector * speed) * factor_time;
-            const auto flux_times_normal =
-              0.5 *
-              ((u_minus + u_plus) * normal_times_speed +
-               flux_alpha * std::abs(normal_times_speed) * (u_minus - u_plus));
-
-            flux =
-              flux_times_normal - factor_skew * normal_times_speed * u_minus;
-
-            eval_minus.submit_value(flux, q);
-          }
+        evaluate_on_face(factor_time, eval_minus);
 
         eval_minus.integrate_scatter(EvaluationFlags::values, dst);
       }
@@ -1341,6 +1307,7 @@ namespace DGAdvection
     gmres_data.batched_mode      = true;
     // gmres_data.exact_residual = false;
     SolverGMRES<Vector<Number>> gmres(control, memory, gmres_data);
+    CellwisePreconditionerFDM<dim, fe_degree> precondition;
 
     for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
       {
@@ -1355,13 +1322,12 @@ namespace DGAdvection
           data.get_mapping_info().face_data[0].descriptor[0].quadrature,
           1. / time_step,
           factor_time);
-        CellwisePreconditionerFDM<dim, fe_degree> precondition(
-          eigenvectors,
-          inverse_eigenvectors,
-          eigenvalues,
-          determinant(eval.inverse_jacobian(0)),
-          scaled_cell_velocity[cell] * factor_time,
-          1. / time_step);
+        precondition.reinit(eigenvectors,
+                            inverse_eigenvectors,
+                            eigenvalues,
+                            determinant(eval.inverse_jacobian(0)),
+                            scaled_cell_velocity[cell] * factor_time,
+                            1. / time_step);
         local_operator.transform_to_collocation(eval.begin_dof_values(),
                                                 local_src);
         // gmres.solve(local_operator, local_dst, local_src, precondition);
@@ -1403,7 +1369,7 @@ namespace DGAdvection
     DiagonallyImplicitRungeKuttaIntegrator(
       const unsigned int                        n_stages,
       const AdvectionOperation<dim, fe_degree> &op)
-      : op(const_cast<AdvectionOperation<dim, fe_degree>&>(op))
+      : op(const_cast<AdvectionOperation<dim, fe_degree> &>(op))
       , n_accumulated_iterations(0)
       , n_solutions(0)
     {
@@ -1530,12 +1496,12 @@ namespace DGAdvection
           op.set_time(time + c[stage] * time_step, gamma * time_step);
 
           SolverControl control(1000, tmp.l2_norm() * 1e-9);
-          SolverFGMRES<LinearAlgebra::distributed::Vector<Number>> solver(
-            control);
-          solver.solve(op,
-                       ki[stage],
-                       tmp,
-                       preconditioner);
+          using SolverType =
+            SolverFGMRES<LinearAlgebra::distributed::Vector<Number>>;
+          typename SolverType::AdditionalData gmres_data;
+          gmres_data.max_basis_size = 20;
+          SolverType solver(control, gmres_data);
+          solver.solve(op, ki[stage], tmp, preconditioner);
           n_accumulated_iterations += control.last_step();
           ++n_solutions;
           solution.add(-b[stage] / gamma, ki[stage]);
@@ -1833,6 +1799,17 @@ namespace DGAdvection
     advection_operator.initialize_dof_vector(solution);
     advection_operator.project_initial(solution);
 
+    if (false && Utilities::MPI::n_mpi_processes(MPI_COMM_WORLD) == 1)
+      {
+        DynamicSparsityPattern dsp(dof_handler.n_dofs(), dof_handler.n_dofs());
+        DoFTools::make_flux_sparsity_pattern(dof_handler, dsp);
+        SparsityPattern sp;
+        sp.copy_from(dsp);
+        SparseMatrix<Number> sp_mat(sp);
+        advection_operator.compute_matrix(sp_mat);
+        std::cout << "Matrix norm: " << sp_mat.frobenius_norm() << std::endl;
+      }
+
     LinearAlgebra::distributed::Vector<Number> solution_copy = solution;
     LinearAlgebra::distributed::Vector<Number> rhs;
     rhs.reinit(solution);
@@ -1848,7 +1825,8 @@ namespace DGAdvection
     double       output_time     = 0;
     unsigned int timestep_number = 1;
 
-    DiagonallyImplicitRungeKuttaIntegrator<dim> time_integrator(7, advection_operator);
+    DiagonallyImplicitRungeKuttaIntegrator<dim> time_integrator(
+      7, advection_operator);
 
     // This is the main time loop, asking the time integrator class to perform
     // the time step and update the content in the solution vector.
@@ -1886,7 +1864,8 @@ namespace DGAdvection
 
     pcout << "   Statistics of linear solver: n_systems = "
           << time_integrator.get_solver_statistics().second << ", avg_its = "
-          << static_cast<double>(time_integrator.get_solver_statistics().first) /
+          << static_cast<double>(
+               time_integrator.get_solver_statistics().first) /
                time_integrator.get_solver_statistics().second
           << std::endl;
 
