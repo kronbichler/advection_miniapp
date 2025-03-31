@@ -75,6 +75,8 @@ namespace DGAdvection
   // (around 30), depending on the dimension and the mesh size
   const unsigned int fe_degree = 5;
 
+  const unsigned int cells_per_patch_1d = 1;
+
   // The time step size is controlled via this parameter as
   // dt = courant_number * min_h / transport_norm
   const double courant_number = 4;
@@ -274,162 +276,120 @@ namespace DGAdvection
 
 
 
-  template <int dim, int fe_degree, typename Number = double>
+  template <int dim>
   class CellwisePreconditionerFDM
   {
   public:
-    static constexpr unsigned int n = fe_degree + 1;
-    using vcomplex                  = std::complex<VectorizedArray<Number>>;
-
-    CellwisePreconditionerFDM() = default;
+    CellwisePreconditionerFDM(
+      const std::array<FullMatrix<std::complex<double>>, 2> &eigenvectors,
+      const std::array<FullMatrix<std::complex<double>>, 2>
+        &inverse_eigenvectors,
+      const std::array<std::vector<std::complex<double>>, 2> &eigenvalues)
+      : eigenvectors(eigenvectors)
+      , inverse_eigenvectors(inverse_eigenvectors)
+      , eigenvalues(eigenvalues)
+    {
+      inverse_eigenvalues_for_cell.resize(
+        Utilities::pow(eigenvalues[0].size(), dim));
+      data_array.resize(inverse_eigenvalues_for_cell.size());
+    }
 
     void
-    reinit(const std::array<FullMatrix<std::complex<double>>, 2> &eigenvectors,
-           const std::array<FullMatrix<std::complex<double>>, 2>
-             &inverse_eigenvectors,
-           const std::array<std::vector<std::complex<double>>, 2> &eigenvalues,
-           const VectorizedArray<Number> inv_jacobian_determinant,
-           const Tensor<1, dim, VectorizedArray<Number>> &average_velocity,
-           const double                                   inv_dt)
+    reinit(const double                  inv_jacobian_determinant,
+           const Tensor<1, dim, double> &average_velocity,
+           const double                  inv_dt)
     {
-      Tensor<1, dim, VectorizedArray<Number>> blend_factor_eig;
       for (unsigned int d = 0; d < dim; ++d)
-        for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v)
-          if (average_velocity[d][v] < 0.0)
-            blend_factor_eig[d][v] = 1.0;
-          else
-            blend_factor_eig[d][v] = 0.0;
+        if (average_velocity[d] < 0.0)
+          index_select[d] = 1;
+        else
+          index_select[d] = 0;
+
+      const unsigned int n = eigenvalues[0].size();
 
       for (unsigned int i2 = 0, c = 0; i2 < (dim > 2 ? n : 1); ++i2)
         for (unsigned int i1 = 0; i1 < (dim > 1 ? n : 1); ++i1)
           for (unsigned int i0 = 0; i0 < n; ++i0, ++c)
             {
-              std::array<unsigned int, 3>           indices{{i0, i1, i2}};
-              std::complex<VectorizedArray<Number>> diagonal_element =
-                make_vectorized_array<Number>(inv_dt);
+              std::array<unsigned int, 3> indices{{i0, i1, i2}};
+              std::complex<double>        diagonal_element = inv_dt;
               for (unsigned int d = 0; d < dim; ++d)
                 {
-                  std::complex<VectorizedArray<Number>> eig1(
-                    eigenvalues[0][indices[d]]),
-                    eig2(eigenvalues[1][indices[d]]);
-                  diagonal_element +=
-                    average_velocity[d] * ((1.0 - blend_factor_eig[d]) * eig1 +
-                                           blend_factor_eig[d] * eig2);
+                  std::complex<double> eig(
+                    eigenvalues[index_select[d]][indices[d]]);
+                  diagonal_element += average_velocity[d] * eig;
                 }
               inverse_eigenvalues_for_cell[c] =
                 inv_jacobian_determinant / diagonal_element;
             }
-      for (unsigned int d = 0; d < dim; ++d)
-        {
-          for (unsigned int i = 0, c = 0; i < n; ++i)
-            for (unsigned int j = 0; j < n; ++j, ++c)
-              {
-                {
-                  const std::complex<VectorizedArray<Number>> eig1(
-                    eigenvectors[0](i, j)),
-                    eig2(eigenvectors[1](i, j));
-                  this->eigenvectors[d][c] =
-                    (1.0 - blend_factor_eig[d]) * eig1 +
-                    blend_factor_eig[d] * eig2;
-                }
-                {
-                  const std::complex<VectorizedArray<Number>> eig1(
-                    inverse_eigenvectors[0](i, j)),
-                    eig2(inverse_eigenvectors[1](i, j));
-                  this->inverse_eigenvectors[d][c] =
-                    (1.0 - blend_factor_eig[d]) * eig1 +
-                    blend_factor_eig[d] * eig2;
-                }
-              }
-        }
-      /*
-      vcomplex mat[n * n][n * n];
-      for (unsigned int i1=0; i1<n; ++i1)
-        for (unsigned int i0=0; i0<n; ++i0)
-          for (unsigned int j1=0; j1<n; ++j1)
-            for (unsigned int j0=0; j0<n; ++j0)
-              mat[i1 * n + i0][j1 * n + j0] = this->inverse_eigenvectors[0][i0 *
-      n + j0] * this->inverse_eigenvectors[1][i1 * n + j1] *
-      inverse_eigenvalues_for_cell[i1 * n + i0]; vcomplex mat2[n * n][n * n];
-      for (unsigned int i1=0; i1<n; ++i1)
-        for (unsigned int i0=0; i0<n; ++i0)
-          for (unsigned int j1=0; j1<n; ++j1)
-            for (unsigned int j0=0; j0<n; ++j0)
-              mat2[i1 * n + i0][j1 * n + j0] = this->eigenvectors[0][i0 * n +
-      j0] * this->eigenvectors[1][i1 * n + j1]; for (unsigned int i=0; i<n*n;
-      ++i)
-        {
-          for (unsigned int j=0; j<n*n; ++j)
-            {
-              vcomplex sum = vcomplex();
-              for (unsigned int k=0; k<n * n; ++k)
-                sum += mat2[i][k] * mat[k][j];
-              std::cout << sum << " ";
-            }
-          std::cout << std::endl;
-        }
-      */
     }
 
     void
-    vmult(Vector<Number> &dst, const Vector<Number> &src) const
+    vmult(Vector<double> &dst, const Vector<double> &src) const
     {
       // copy from real to complex vector
-      AssertDimension(VectorizedArray<Number>::size() * data_array.size(),
-                      dst.size());
-      AssertDimension(VectorizedArray<Number>::size() * data_array.size(),
-                      src.size());
+      AssertDimension(data_array.size(), dst.size());
+      AssertDimension(data_array.size(), src.size());
       for (unsigned int i = 0; i < data_array.size(); ++i)
-        {
-          VectorizedArray<Number> value;
-          value.load(src.begin() + i * VectorizedArray<Number>::size());
-          data_array[i].real(value);
-          data_array[i].imag(VectorizedArray<Number>());
-        }
+        data_array[i] = src(i);
 
-      using Eval = internal::
-        EvaluatorTensorProduct<internal::evaluate_general, dim, n, n, vcomplex>;
+      internal::EvaluatorTensorProduct<internal::evaluate_general,
+                                       dim,
+                                       0,
+                                       0,
+                                       std::complex<double>>
+        eval(nullptr,
+             nullptr,
+             nullptr,
+             eigenvalues[0].size(),
+             eigenvalues[0].size());
       // apply V M^{-1}
-      Eval::template apply<0, false, false>(inverse_eigenvectors[0].data(),
-                                            data_array.data(),
-                                            data_array.data());
+      eval.template apply<0, false, false>(
+        &inverse_eigenvectors[index_select[0]](0, 0),
+        data_array.data(),
+        data_array.data());
       if (dim > 1)
-        Eval::template apply<1, false, false>(inverse_eigenvectors[1].data(),
-                                              data_array.data(),
-                                              data_array.data());
+        eval.template apply<1, false, false>(
+          &inverse_eigenvectors[index_select[1]](0, 0),
+          data_array.data(),
+          data_array.data());
       if (dim > 2)
-        Eval::template apply<2, false, false>(inverse_eigenvectors[2].data(),
-                                              data_array.data(),
-                                              data_array.data());
+        eval.template apply<2, false, false>(
+          &inverse_eigenvectors[index_select[2]](0, 0),
+          data_array.data(),
+          data_array.data());
 
       // apply inv(I x Lambda + Lambda x I)
       for (unsigned int c = 0; c < data_array.size(); ++c)
         data_array[c] *= inverse_eigenvalues_for_cell[c];
 
       // apply V^{-1}
-      Eval::template apply<0, false, false>(eigenvectors[0].data(),
-                                            data_array.data(),
-                                            data_array.data());
+      eval.template apply<0, false, false>(&eigenvectors[index_select[0]](0, 0),
+                                           data_array.data(),
+                                           data_array.data());
       if (dim > 1)
-        Eval::template apply<1, false, false>(eigenvectors[1].data(),
-                                              data_array.data(),
-                                              data_array.data());
+        eval.template apply<1, false, false>(&eigenvectors[index_select[1]](0,
+                                                                            0),
+                                             data_array.data(),
+                                             data_array.data());
       if (dim > 2)
-        Eval::template apply<2, false, false>(eigenvectors[2].data(),
-                                              data_array.data(),
-                                              data_array.data());
+        eval.template apply<2, false, false>(&eigenvectors[index_select[2]](0,
+                                                                            0),
+                                             data_array.data(),
+                                             data_array.data());
 
       // copy back to real vector
       for (unsigned int i = 0; i < data_array.size(); ++i)
-        data_array[i].real().store(dst.begin() +
-                                   i * VectorizedArray<Number>::size());
+        dst(i) = data_array[i].real();
     }
 
   private:
-    dealii::ndarray<vcomplex, dim, n * n>        eigenvectors;
-    dealii::ndarray<vcomplex, dim, n * n>        inverse_eigenvectors;
-    std::array<vcomplex, Utilities::pow(n, dim)> inverse_eigenvalues_for_cell;
-    mutable std::array<vcomplex, Utilities::pow(n, dim)> data_array;
+    const std::array<FullMatrix<std::complex<double>>, 2> &eigenvectors;
+    const std::array<FullMatrix<std::complex<double>>, 2> &inverse_eigenvectors;
+    const std::array<std::vector<std::complex<double>>, 2> &eigenvalues;
+    std::vector<std::complex<double>>         inverse_eigenvalues_for_cell;
+    mutable std::vector<std::complex<double>> data_array;
+    std::array<unsigned int, dim>             index_select;
   };
 
 
@@ -568,8 +528,13 @@ namespace DGAdvection
 
     std::array<FullMatrix<std::complex<double>>, 2> eigenvectors,
       inverse_eigenvectors;
-    std::array<std::vector<std::complex<double>>, 2>       eigenvalues;
-    AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> scaled_cell_velocity;
+    std::array<std::vector<std::complex<double>>, 2> eigenvalues;
+    AlignedVector<Tensor<1, dim, Number>>            patch_velocities;
+    AlignedVector<Number>                            patch_volumes;
+
+    std::vector<
+      std::array<unsigned int, Utilities::pow(cells_per_patch_1d, dim)>>
+      dof_indices_on_patch;
 
     void
     local_apply_domain(
@@ -804,65 +769,108 @@ namespace DGAdvection
         }
     }
 
-    QGauss<1>               gauss_quad(dof_handler.get_fe().degree + 1);
-    FE_DGQ<1> fe_1d(dof_handler.get_fe().degree);
-    constexpr unsigned int  n = fe_degree + 1;
+    Triangulation<1> tria;
+    GridGenerator::subdivided_hyper_cube(tria, cells_per_patch_1d, 0, 1);
+
+    QGauss<1>     gauss_quad(dof_handler.get_fe().degree + 1);
+    FE_DGQ<1>     fe_1d(dof_handler.get_fe().degree);
+    DoFHandler<1> dof_h(tria);
+    dof_h.distribute_dofs(fe_1d);
+    FEValues<1>            fe_values(fe_1d,
+                          gauss_quad,
+                          update_values | update_gradients | update_JxW_values);
+    constexpr unsigned int n = fe_degree + 1;
     for (unsigned int c = 0; c < 2; ++c)
       {
-        LAPACKFullMatrix<double> deriv_matrix(n, n);
-        for (unsigned int q = 0; q < n; ++q)
+        LAPACKFullMatrix<double> deriv_matrix(dof_h.n_dofs(), dof_h.n_dofs());
+        LAPACKFullMatrix<double> mass_matrix(dof_h.n_dofs(), dof_h.n_dofs());
+        std::vector<types::global_dof_index> cell_indices(fe_1d.dofs_per_cell);
+        std::vector<types::global_dof_index> cell_indices_n(
+          fe_1d.dofs_per_cell);
+        for (const auto &cell : dof_h.active_cell_iterators())
           {
+            fe_values.reinit(cell);
+            cell->get_dof_indices(cell_indices);
             for (unsigned int i = 0; i < n; ++i)
               for (unsigned int j = 0; j < n; ++j)
-                deriv_matrix(i, j) -=
-                  fe_1d.shape_grad(i, gauss_quad.point(q))[0] *
-                  fe_1d.shape_value(j, gauss_quad.point(q)) *
-                  gauss_quad.weight(q);
-          }
-        const double sign_advection = (c == 0) ? 1.0 : -1.0;
-        for (unsigned int i = 0; i < n; ++i)
-          for (unsigned int j = 0; j < n; ++j)
-            deriv_matrix(i, j) += -fe_1d.shape_value(i, Point<1>()) *
-                                    fe_1d.shape_value(j, Point<1>()) *
-                                    (0.5 - flux_alpha * 0.5 * sign_advection) +
-                                  fe_1d.shape_value(i, Point<1>(1.0)) *
-                                    fe_1d.shape_value(j, Point<1>(1.0)) *
-                                    (0.5 + flux_alpha * 0.5 * sign_advection);
+                {
+                  double sum = 0;
+                  for (unsigned int q = 0; q < n; ++q)
+                    sum -= fe_values.shape_grad(i, q)[0] *
+                           fe_values.shape_value(j, q) * fe_values.JxW(q);
+                  deriv_matrix(cell_indices[i], cell_indices[j]) += sum;
 
-        LAPACKFullMatrix<double> mass_matrix(n, n), transport_matrix(n, n);
-        for (unsigned int q = 0; q < n; ++q)
-          {
+                  sum = 0;
+                  for (unsigned int q = 0; q < n; ++q)
+                    sum += fe_values.shape_value(i, q) *
+                           fe_values.shape_value(j, q) * fe_values.JxW(q);
+                  mass_matrix(cell_indices[i], cell_indices[j]) = sum;
+                }
+            const double sign_advection = (c == 0) ? 1.0 : -1.0;
             for (unsigned int i = 0; i < n; ++i)
               for (unsigned int j = 0; j < n; ++j)
-                mass_matrix(i, j) += fe_1d.shape_value(i, gauss_quad.point(q)) *
-                  fe_1d.shape_value(j, gauss_quad.point(q)) * gauss_quad.weight(q);
+                deriv_matrix(cell_indices[i], cell_indices[j]) +=
+                  -fe_1d.shape_value(i, Point<1>()) *
+                    fe_1d.shape_value(j, Point<1>()) *
+                    (0.5 - flux_alpha * 0.5 * sign_advection) +
+                  fe_1d.shape_value(i, Point<1>(1.0)) *
+                    fe_1d.shape_value(j, Point<1>(1.0)) *
+                    (0.5 + flux_alpha * 0.5 * sign_advection);
+            if (cell->at_boundary(0) == false)
+              {
+                cell->neighbor(0)->get_dof_indices(cell_indices_n);
+                for (unsigned int i = 0; i < n; ++i)
+                  for (unsigned int j = 0; j < n; ++j)
+                    deriv_matrix(cell_indices[i], cell_indices_n[j]) +=
+                      fe_1d.shape_value(i, Point<1>(0.0)) *
+                      fe_1d.shape_value(j, Point<1>(1.0)) *
+                      (0.5 + flux_alpha * 0.4999999999 * sign_advection);
+              }
+            if (cell->at_boundary(1) == false)
+              {
+                cell->neighbor(1)->get_dof_indices(cell_indices_n);
+                for (unsigned int i = 0; i < n; ++i)
+                  for (unsigned int j = 0; j < n; ++j)
+                    deriv_matrix(cell_indices[i], cell_indices_n[j]) -=
+                      fe_1d.shape_value(i, Point<1>(1.0)) *
+                      fe_1d.shape_value(j, Point<1>(0.0)) *
+                      (0.5 - flux_alpha * 0.4999999999 * sign_advection);
+              }
           }
+
+        LAPACKFullMatrix<double> transport_matrix(mass_matrix);
         LAPACKFullMatrix<double> orig_mass = mass_matrix;
         mass_matrix.invert();
         mass_matrix.mmult(transport_matrix, deriv_matrix);
 
-        //std::cout << "Derivative: " << std::endl;
-        //deriv_matrix.print_formatted(std::cout);
-        //std::cout << "Matrix for fdm: " << std::endl;
-        //transport_matrix.print_formatted(std::cout);
+        // std::cout << "Derivative: " << std::endl;
+        // deriv_matrix.print_formatted(std::cout);
+        // std::cout << "Matrix for fdm: " << std::endl;
+        // transport_matrix.print_formatted(std::cout, 6, true, 12, "0");
 
         transport_matrix.compute_eigenvalues(true, false);
 
-        eigenvalues[c].resize(n);
-        for (unsigned int i = 0; i < n; ++i)
-          eigenvalues[c][i] = transport_matrix.eigenvalue(i);
+        // std::cout << "eigenvalues" << std::endl;
+        eigenvalues[c].resize(mass_matrix.m());
+        for (unsigned int i = 0; i < mass_matrix.m(); ++i)
+          {
+            eigenvalues[c][i] = transport_matrix.eigenvalue(i);
+            // std::cout << eigenvalues[c][i] << " ";
+          }
+        // std::cout << std::endl;
 
-        eigenvectors[c]         = transport_matrix.get_right_eigenvectors();
+        eigenvectors[c] = transport_matrix.get_right_eigenvectors();
         FullMatrix<std::complex<double>> tmp = eigenvectors[c];
+        // tmp.print_formatted(std::cout);
         tmp.gauss_jordan();
-        inverse_eigenvectors[c].reinit(n, n);
-        for (unsigned int i = 0; i < n; ++i)
-          for (unsigned int j = 0; j < n; ++j)
+        inverse_eigenvectors[c].reinit(mass_matrix.m(), mass_matrix.m());
+        for (unsigned int i = 0; i < mass_matrix.m(); ++i)
+          for (unsigned int j = 0; j < mass_matrix.m(); ++j)
             {
               std::complex<double> sum = 0;
-              for (unsigned int k = 0; k < n; ++k)
+              for (unsigned int k = 0; k < mass_matrix.m(); ++k)
                 sum += tmp(i, k) * mass_matrix(k, j);
-              inverse_eigenvectors[c](i, j)= sum;
+              inverse_eigenvectors[c](i, j) = sum;
             }
 
         // test matrix: 22 * mass + 1.2 * velocity_x + 0.7 * velocity_y;
@@ -873,7 +881,8 @@ namespace DGAdvection
               for (unsigned int i1 = 0; i1 < n; ++i1)
                 for (unsigned int j = 0; j < n; ++j)
                   for (unsigned int j1 = 0; j1 < n; ++j1)
-                    full(i * n + i1, j * n + j1) = 22. * orig_mass(i, j) * orig_mass(i1, j1) +
+                    full(i * n + i1, j * n + j1) =
+                      22. * orig_mass(i, j) * orig_mass(i1, j1) +
                       1.2 * orig_mass(i, j) * deriv_matrix(i1, j1) +
                       0.7 * deriv_matrix(i, j) * orig_mass(i1, j1);
 
@@ -884,25 +893,77 @@ namespace DGAdvection
             std::cout << "inverted advect matrix" << std::endl;
             full.print_formatted(std::cout);
           }
-        
       }
 
+    unsigned int ancestor_level = 0;
+    {
+      unsigned int my_cells = cells_per_patch_1d;
+      while (my_cells > 1)
+        {
+          ++ancestor_level;
+          my_cells /= 2;
+        }
+    }
+    std::vector<types::global_dof_index> dof_indices(
+      dof_handler.get_fe().dofs_per_cell);
+    dof_indices_on_patch.clear();
+    patch_velocities.clear();
+    {
+      FEValues<dim> fe_values(mapping,
+                              dof_handler.get_fe(),
+                              Quadrature<dim>(quadrature),
+                              update_quadrature_points | update_JxW_values);
+      for (const auto &cell : dof_handler.active_cell_iterators())
+        {
+          typename Triangulation<dim>::cell_iterator cell_mod = cell;
+          for (unsigned int i = 0; i < ancestor_level; ++i)
+            cell_mod = cell_mod->parent();
+          for (unsigned int i = 0; i < ancestor_level; ++i)
+            cell_mod = cell_mod->child(0);
 
-    scaled_cell_velocity.resize(data.n_cell_batches());
-    FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> eval(data);
-    for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
-      {
-        eval.reinit(cell);
-        Tensor<1, dim, VectorizedArray<Number>> average_velocity;
-        VectorizedArray<Number>                 cell_volume = {};
-        for (unsigned int q = 0; q < eval.n_q_points; ++q)
-          {
-            average_velocity +=
-              eval.inverse_jacobian(q) * speeds_cells(cell, q) * eval.JxW(q);
-            cell_volume += eval.JxW(q);
-          }
-        scaled_cell_velocity[cell] = average_velocity / cell_volume;
-      }
+          // let the first child cell do everything
+          if (cell->id() != cell_mod->id())
+            continue;
+
+          dof_indices_on_patch.push_back({});
+          const unsigned int m = cells_per_patch_1d;
+          Tensor<1, dim>     cell_velocity;
+          double             patch_volume = 0;
+          auto               cell_2       = cell;
+          for (unsigned int d2 = 0; d2 < (dim > 2 ? m : 1); ++d2)
+            {
+              auto cell_1 = cell_2;
+              for (unsigned int d1 = 0; d1 < (dim > 1 ? m : 1); ++d1)
+                {
+                  auto cell_0 = cell_1;
+                  for (unsigned int d0 = 0; d0 < m; ++d0)
+                    {
+                      fe_values.reinit(cell_0);
+                      for (const unsigned int q :
+                           fe_values.quadrature_point_indices())
+                        {
+                          cell_velocity += transport_speed.value(
+                                             fe_values.quadrature_point(q)) *
+                                           fe_values.JxW(q);
+                          patch_volume += fe_values.JxW(q);
+                        }
+                      cell_0->get_dof_indices(dof_indices);
+                      dof_indices_on_patch.back()[(d2 * m + d1) * m + d0] =
+                        dof_handler.locally_owned_dofs().index_within_set(
+                          dof_indices[0]);
+                      cell_0 = ((d0 + 1) < m) ? cell_0->neighbor(1) : cell_0;
+                    }
+                  if (dim > 1)
+                    cell_1 = ((d1 + 1) < m) ? cell_1->neighbor(3) : cell_1;
+                }
+              if (dim > 2)
+                cell_2 = ((d2 + 1) < m) ? cell_2->neighbor(5) : cell_2;
+            }
+
+          patch_velocities.push_back(cell_velocity / patch_volume);
+          patch_volumes.push_back(patch_volume);
+        }
+    }
   }
 
 
@@ -1067,49 +1128,6 @@ namespace DGAdvection
 
 
 
-  template <typename VectorType>
-  class MyVectorMemory : public VectorMemory<VectorType>
-  {
-  public:
-    MyVectorMemory()
-      : first_unused(vectors.end())
-    {}
-
-    virtual VectorType *
-    alloc() override
-    {
-      if (first_unused == vectors.end())
-        {
-          vectors.push_back(VectorType());
-          return &vectors.back();
-        }
-      else
-        {
-          VectorType *return_value = &(*first_unused);
-          ++first_unused;
-          return return_value;
-        }
-    }
-
-    virtual void
-    free(const VectorType *const vector) override
-    {
-      typename std::list<VectorType>::iterator it = vectors.begin();
-      while (&*it != vector)
-        ++it;
-
-      Assert(it != first_unused && vector == &*it, ExcInternalError());
-      vectors.splice(first_unused, vectors, it);
-      --first_unused;
-    }
-
-  private:
-    std::list<VectorType>                    vectors;
-    typename std::list<VectorType>::iterator first_unused;
-  };
-
-
-
   template <int dim, int fe_degree>
   void
   AdvectionOperation<dim, fe_degree>::precondition_block_jacobi(
@@ -1120,31 +1138,41 @@ namespace DGAdvection
     const Number factor_time =
       std::cos(numbers::PI * (time + time_step) / FINAL_TIME);
 
-    FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> eval(data);
-    MyVectorMemory<Vector<double>>                         memory;
-    Vector<double> local_src(eval.dofs_per_cell *
-                             VectorizedArray<Number>::size());
+    Vector<double> local_src(dof_indices_on_patch[0].size() *
+                             Utilities::pow(fe_degree + 1, dim));
     Vector<double> local_dst(local_src);
-    eval.reinit(0);
 
-    CellwisePreconditionerFDM<dim, fe_degree> precondition;
+    CellwisePreconditionerFDM<dim> precondition(eigenvectors,
+                                                inverse_eigenvectors,
+                                                eigenvalues);
 
-    for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
+    unsigned int count = 0;
+    for (const auto &dof_indices_on_cells : dof_indices_on_patch)
       {
-        eval.reinit(cell);
-        eval.read_dof_values(src);
-        precondition.reinit(eigenvectors,
-                            inverse_eigenvectors,
-                            eigenvalues,
-                            determinant(eval.inverse_jacobian(0)),
-                            scaled_cell_velocity[cell] * factor_time,
+        precondition.reinit(patch_volumes[count],
+                            patch_velocities[count] * factor_time,
                             1. / time_step);
-        for (unsigned int i = 0; i < eval.dofs_per_cell; ++i)
-          eval.begin_dof_values()[i].store(local_src.data() + i * VectorizedArray<Number>::size());
+        const unsigned int m = cells_per_patch_1d;
+        const unsigned int n = fe_degree + 1;
+        for (unsigned int p2 = 0, c = 0; p2 < (dim > 2 ? m : 1); ++p2)
+          for (unsigned int i2 = 0; i2 < (dim > 2 ? n : 1); ++i2)
+            for (unsigned int p1 = 0; p1 < (dim > 1 ? m : 1); ++p1)
+              for (unsigned int i1 = 0; i1 < (dim > 1 ? n : 1); ++i1)
+                for (unsigned int p0 = 0; p0 < m; ++p0)
+                  for (unsigned int i0 = 0; i0 < n; ++i0, ++c)
+                    local_src[c] = src.local_element(
+                      dof_indices_on_cells[(p2 * m + p1) * m + p0] +
+                      (i2 * n + i1) * n + i0);
         precondition.vmult(local_dst, local_src);
-        for (unsigned int i = 0; i < eval.dofs_per_cell; ++i)
-          eval.begin_dof_values()[i].load(local_dst.data() + i * VectorizedArray<Number>::size());
-        eval.set_dof_values(dst);
+        for (unsigned int p2 = 0, c = 0; p2 < (dim > 2 ? m : 1); ++p2)
+          for (unsigned int i2 = 0; i2 < (dim > 2 ? n : 1); ++i2)
+            for (unsigned int p1 = 0; p1 < (dim > 1 ? m : 1); ++p1)
+              for (unsigned int i1 = 0; i1 < (dim > 1 ? n : 1); ++i1)
+                for (unsigned int p0 = 0; p0 < m; ++p0)
+                  for (unsigned int i0 = 0; i0 < n; ++i0, ++c)
+                    dst.local_element(
+                      dof_indices_on_cells[(p2 * m + p1) * m + p0] +
+                      (i2 * n + i1) * n + i0) = local_dst[c];
       }
     computing_times[3] += timer.wall_time();
   }
