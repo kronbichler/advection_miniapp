@@ -912,7 +912,7 @@ namespace DGAdvection
       FEValues<dim> fe_values(mapping,
                               dof_handler.get_fe(),
                               Quadrature<dim>(quadrature),
-                              update_quadrature_points | update_JxW_values);
+                              update_quadrature_points | update_JxW_values | update_inverse_jacobians);
       for (const auto &cell : dof_handler.active_cell_iterators())
         {
           typename Triangulation<dim>::cell_iterator cell_mod = cell;
@@ -942,7 +942,7 @@ namespace DGAdvection
                       for (const unsigned int q :
                            fe_values.quadrature_point_indices())
                         {
-                          cell_velocity += transport_speed.value(
+                          cell_velocity += Tensor<2, dim>(fe_values.inverse_jacobian(q).transpose()) * transport_speed.value(
                                              fe_values.quadrature_point(q)) *
                                            fe_values.JxW(q);
                           patch_volume += fe_values.JxW(q);
@@ -961,7 +961,7 @@ namespace DGAdvection
             }
 
           patch_velocities.push_back(cell_velocity / patch_volume);
-          patch_volumes.push_back(patch_volume);
+          patch_volumes.push_back(1. / patch_volume);
         }
     }
   }
@@ -1173,6 +1173,8 @@ namespace DGAdvection
                     dst.local_element(
                       dof_indices_on_cells[(p2 * m + p1) * m + p0] +
                       (i2 * n + i1) * n + i0) = local_dst[c];
+
+        ++count;
       }
     computing_times[3] += timer.wall_time();
   }
