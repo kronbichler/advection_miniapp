@@ -275,219 +275,6 @@ namespace DGAdvection
 
 
   template <int dim, int fe_degree, typename Number = double>
-  class CellwiseOperator
-  {
-  public:
-    CellwiseOperator(
-      const Tensor<2, dim, VectorizedArray<Number>>                    &jac,
-      const internal::MatrixFreeFunctions::UnivariateShapeData<Number> &shape,
-      const Tensor<1, dim, VectorizedArray<Number>> *speed_cells,
-      const Table<2, VectorizedArray<Number>>       &normal_speed_faces,
-      const Quadrature<dim>                         &cell_quadrature,
-      const Quadrature<dim - 1>                     &face_quadrature,
-      const double                                   inv_dt,
-      const Number                                   time_factor)
-      : jac(jac)
-      , shape(shape)
-      , speed_cells(speed_cells)
-      , normal_speed_faces(normal_speed_faces)
-      , cell_quadrature(cell_quadrature)
-      , face_quadrature(face_quadrature)
-      , inv_dt(inv_dt)
-      , time_factor(time_factor)
-    {}
-
-    void
-    vmult(Vector<Number> &dst, const Vector<Number> &src) const
-    {
-      const VectorizedArray<Number> *src_ptr =
-        reinterpret_cast<const VectorizedArray<Number> *>(src.data());
-      VectorizedArray<Number> *dst_ptr =
-        reinterpret_cast<VectorizedArray<Number> *>(dst.data());
-      const unsigned int dofs_per_component =
-        Utilities::pow(fe_degree + 1, dim);
-      VectorizedArray<Number> gradients[dim][dofs_per_component];
-
-      // face integrals relevant to present cell
-      for (unsigned int d = 0; d < dim; ++d)
-        {
-          const unsigned int stride  = Utilities::pow(fe_degree + 1, d);
-          const unsigned int offset0 = d > 0 ? 1 : fe_degree + 1;
-          const unsigned int offset1 =
-            (dim > 2 ?
-               (d == 2 ? (fe_degree + 1) : Utilities::pow(fe_degree + 1, 2)) :
-               1);
-          VectorizedArray<Number> surface_JxW = 1.;
-          for (unsigned int e = 0; e < dim; ++e)
-            if (d != e)
-              surface_JxW *= jac[e][e];
-          surface_JxW = 1.0 / surface_JxW;
-
-          for (unsigned int i1 = 0; i1 < (dim > 2 ? fe_degree + 1 : 1); ++i1)
-            for (unsigned int i0 = 0; i0 < (dim > 1 ? fe_degree + 1 : 1); ++i0)
-              {
-                VectorizedArray<Number> sum_l = {}, sum_r = {};
-                const auto *my_ptr = src_ptr + offset1 * i1 + offset0 * i0;
-                for (unsigned int j = 0; j < fe_degree + 1;
-                     ++j, my_ptr += stride)
-                  {
-                    const VectorizedArray<Number> value = my_ptr[0];
-                    sum_l += shape.quadrature_data_on_face[0][j] * value;
-                    sum_r +=
-                      shape.quadrature_data_on_face[0][fe_degree - j] * value;
-                  }
-
-                const unsigned int q = (dim == 3 && d == 1) ?
-                                         i0 * (fe_degree + 1) + i1 :
-                                         i1 * (fe_degree + 1) + i0;
-                {
-                  const auto speed = normal_speed_faces(2 * d, q) * time_factor;
-                  const auto coefficient =
-                    0.5 * (speed + flux_alpha * std::abs(speed)) -
-                    factor_skew * speed;
-                  sum_l = sum_l * coefficient *
-                          (face_quadrature.weight(q) * surface_JxW);
-                }
-                {
-                  const auto speed =
-                    normal_speed_faces(2 * d + 1, q) * time_factor;
-                  const auto coefficient =
-                    0.5 * (speed + flux_alpha * std::abs(speed)) -
-                    factor_skew * speed;
-                  sum_r = sum_r * coefficient *
-                          (face_quadrature.weight(q) * surface_JxW);
-                }
-
-                auto out_ptr = dst_ptr + offset1 * i1 + offset0 * i0;
-                if (d == 0)
-                  for (unsigned int j = 0; j < fe_degree + 1;
-                       ++j, out_ptr += stride)
-                    out_ptr[0] =
-                      shape.quadrature_data_on_face[0][j] * sum_l +
-                      shape.quadrature_data_on_face[0][fe_degree - j] * sum_r;
-                else
-                  for (unsigned int j = 0; j < fe_degree + 1;
-                       ++j, out_ptr += stride)
-                    out_ptr[0] +=
-                      shape.quadrature_data_on_face[0][j] * sum_l +
-                      shape.quadrature_data_on_face[0][fe_degree - j] * sum_r;
-              }
-        }
-
-      internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
-                                       dim,
-                                       fe_degree + 1,
-                                       fe_degree + 1,
-                                       VectorizedArray<Number>,
-                                       Number>
-        eval(shape.shape_values_eo,
-             shape.shape_gradients_collocation_eo,
-             AlignedVector<Number>());
-
-      // volume integrals
-      eval.template gradients<0, true, false>(src_ptr, gradients[0]);
-      if (dim > 1)
-        eval.template gradients<1, true, false>(src_ptr, gradients[1]);
-      if (dim > 2)
-        eval.template gradients<2, true, false>(src_ptr, gradients[2]);
-
-      const VectorizedArray<Number> JxW = 1. / determinant(jac);
-      for (unsigned int q = 0; q < dofs_per_component; ++q)
-        {
-          const auto              speed = speed_cells[q];
-          VectorizedArray<Number> u     = src_ptr[q];
-          VectorizedArray<Number> speed_gradu =
-            speed[0] * gradients[0][q] * jac[0][0];
-          for (unsigned int d = 1; d < dim; ++d)
-            speed_gradu += speed[d] * gradients[d][q] * jac[d][d];
-          VectorizedArray<Number> flux =
-            (factor_skew * time_factor) * speed_gradu;
-          const VectorizedArray<Number> result =
-            (-1.0 + factor_skew) * time_factor * u *
-            (JxW * cell_quadrature.weight(q));
-          for (unsigned int d = 0; d < dim; ++d)
-            gradients[d][q] = result * speed[d] * jac[d][d];
-
-          // mass matrix part
-          u *= VectorizedArray<Number>(inv_dt);
-          flux += u;
-          dst_ptr[q] += flux * (JxW * cell_quadrature.weight(q));
-        }
-      eval.template gradients<0, false, true>(gradients[0], dst_ptr);
-      if (dim > 1)
-        eval.template gradients<1, false, true>(gradients[1], dst_ptr);
-      if (dim > 2)
-        eval.template gradients<2, false, true>(gradients[2], dst_ptr);
-    }
-
-    void
-    transform_to_collocation(const VectorizedArray<Number> *src_ptr,
-                             Vector<Number>                &dst) const
-    {
-      internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
-                                       dim,
-                                       fe_degree + 1,
-                                       fe_degree + 1,
-                                       VectorizedArray<Number>,
-                                       Number>
-                               evaluator(AlignedVector<Number>(),
-                  AlignedVector<Number>(),
-                  shape.inverse_shape_values_eo);
-      VectorizedArray<Number> *dst_ptr =
-        reinterpret_cast<VectorizedArray<Number> *>(dst.data());
-
-      const VectorizedArray<Number> *in  = src_ptr;
-      VectorizedArray<Number>       *out = dst_ptr;
-      // Need to select 'apply' method with hessian slot because values
-      // assume symmetries that do not exist in the inverse shapes
-      evaluator.template hessians<0, true, false>(in, out);
-      if (dim > 1)
-        evaluator.template hessians<1, true, false>(out, out);
-      if (dim > 2)
-        evaluator.template hessians<2, true, false>(out, out);
-    }
-
-    void
-    transform_from_collocation(const Vector<Number>    &src,
-                               VectorizedArray<Number> *dst_ptr) const
-    {
-      internal::EvaluatorTensorProduct<internal::evaluate_evenodd,
-                                       dim,
-                                       fe_degree + 1,
-                                       fe_degree + 1,
-                                       VectorizedArray<Number>,
-                                       Number>
-                                     evaluator(AlignedVector<Number>(),
-                  AlignedVector<Number>(),
-                  shape.inverse_shape_values_eo);
-      const VectorizedArray<Number> *src_ptr =
-        reinterpret_cast<const VectorizedArray<Number> *>(src.data());
-
-      const VectorizedArray<Number> *in  = src_ptr;
-      VectorizedArray<Number>       *out = dst_ptr;
-      // Need to select 'apply' method with hessian slot because values
-      // assume symmetries that do not exist in the inverse shapes
-      evaluator.template hessians<0, false, false>(in, out);
-      if (dim > 1)
-        evaluator.template hessians<1, false, false>(out, out);
-      if (dim > 2)
-        evaluator.template hessians<2, false, false>(out, out);
-    }
-
-  private:
-    const Tensor<2, dim, VectorizedArray<Number>>                     jac;
-    const internal::MatrixFreeFunctions::UnivariateShapeData<Number> &shape;
-    const Tensor<1, dim, VectorizedArray<Number>> *speed_cells;
-    const Table<2, VectorizedArray<Number>>       &normal_speed_faces;
-    const Quadrature<dim>                         &cell_quadrature;
-    const Quadrature<dim - 1>                     &face_quadrature;
-    const Number                                   inv_dt;
-    const Number                                   time_factor;
-  };
-
-
-
-  template <int dim, int fe_degree, typename Number = double>
   class CellwisePreconditionerFDM
   {
   public:
@@ -1018,7 +805,7 @@ namespace DGAdvection
     }
 
     QGauss<1>               gauss_quad(dof_handler.get_fe().degree + 1);
-    FE_DGQArbitraryNodes<1> fe_1d(gauss_quad);
+    FE_DGQ<1> fe_1d(dof_handler.get_fe().degree);
     constexpr unsigned int  n = fe_degree + 1;
     for (unsigned int c = 0; c < 2; ++c)
       {
@@ -1042,22 +829,65 @@ namespace DGAdvection
                                     fe_1d.shape_value(j, Point<1>(1.0)) *
                                     (0.5 + flux_alpha * 0.5 * sign_advection);
 
-        for (unsigned int i = 0; i < n; ++i)
-          for (unsigned int j = 0; j < n; ++j)
-            deriv_matrix(i, j) *= (1. / gauss_quad.weight(i));
-        deriv_matrix.compute_eigenvalues(true, false);
+        LAPACKFullMatrix<double> mass_matrix(n, n), transport_matrix(n, n);
+        for (unsigned int q = 0; q < n; ++q)
+          {
+            for (unsigned int i = 0; i < n; ++i)
+              for (unsigned int j = 0; j < n; ++j)
+                mass_matrix(i, j) += fe_1d.shape_value(i, gauss_quad.point(q)) *
+                  fe_1d.shape_value(j, gauss_quad.point(q)) * gauss_quad.weight(q);
+          }
+        LAPACKFullMatrix<double> orig_mass = mass_matrix;
+        mass_matrix.invert();
+        mass_matrix.mmult(transport_matrix, deriv_matrix);
+
+        //std::cout << "Derivative: " << std::endl;
+        //deriv_matrix.print_formatted(std::cout);
+        //std::cout << "Matrix for fdm: " << std::endl;
+        //transport_matrix.print_formatted(std::cout);
+
+        transport_matrix.compute_eigenvalues(true, false);
 
         eigenvalues[c].resize(n);
         for (unsigned int i = 0; i < n; ++i)
-          eigenvalues[c][i] = deriv_matrix.eigenvalue(i);
+          eigenvalues[c][i] = transport_matrix.eigenvalue(i);
 
-        eigenvectors[c]         = deriv_matrix.get_right_eigenvectors();
-        inverse_eigenvectors[c] = eigenvectors[c];
-        inverse_eigenvectors[c].gauss_jordan();
+        eigenvectors[c]         = transport_matrix.get_right_eigenvectors();
+        FullMatrix<std::complex<double>> tmp = eigenvectors[c];
+        tmp.gauss_jordan();
+        inverse_eigenvectors[c].reinit(n, n);
         for (unsigned int i = 0; i < n; ++i)
           for (unsigned int j = 0; j < n; ++j)
-            inverse_eigenvectors[c](i, j) *= (1. / gauss_quad.weight(j));
+            {
+              std::complex<double> sum = 0;
+              for (unsigned int k = 0; k < n; ++k)
+                sum += tmp(i, k) * mass_matrix(k, j);
+              inverse_eigenvectors[c](i, j)= sum;
+            }
+
+        // test matrix: 22 * mass + 1.2 * velocity_x + 0.7 * velocity_y;
+        if (false)
+          {
+            FullMatrix<double> full(n * n, n * n);
+            for (unsigned int i = 0; i < n; ++i)
+              for (unsigned int i1 = 0; i1 < n; ++i1)
+                for (unsigned int j = 0; j < n; ++j)
+                  for (unsigned int j1 = 0; j1 < n; ++j1)
+                    full(i * n + i1, j * n + j1) = 22. * orig_mass(i, j) * orig_mass(i1, j1) +
+                      1.2 * orig_mass(i, j) * deriv_matrix(i1, j1) +
+                      0.7 * deriv_matrix(i, j) * orig_mass(i1, j1);
+
+            std::cout << "advect matrix" << std::endl;
+            full.print_formatted(std::cout);
+
+            full.gauss_jordan();
+            std::cout << "inverted advect matrix" << std::endl;
+            full.print_formatted(std::cout);
+          }
+        
       }
+
+
     scaled_cell_velocity.resize(data.n_cell_batches());
     FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> eval(data);
     for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
@@ -1297,43 +1127,23 @@ namespace DGAdvection
     Vector<double> local_dst(local_src);
     eval.reinit(0);
 
-    const unsigned int     n_max_iterations = 3;
-    IterationNumberControl control(n_max_iterations, 1e-14, false, false);
-    typename SolverGMRES<Vector<Number>>::AdditionalData gmres_data;
-    gmres_data.right_preconditioning = true;
-    gmres_data.orthogonalization_strategy =
-      LinearAlgebra::OrthogonalizationStrategy::classical_gram_schmidt;
-    gmres_data.max_n_tmp_vectors = n_max_iterations + 2;
-    gmres_data.batched_mode      = true;
-    // gmres_data.exact_residual = false;
-    SolverGMRES<Vector<Number>> gmres(control, memory, gmres_data);
     CellwisePreconditionerFDM<dim, fe_degree> precondition;
 
     for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
       {
         eval.reinit(cell);
         eval.read_dof_values(src);
-        CellwiseOperator<dim, fe_degree> local_operator(
-          eval.inverse_jacobian(0),
-          data.get_shape_info().data[0],
-          &speeds_cells(cell, 0),
-          normal_speeds_faces[cell],
-          data.get_mapping_info().cell_data[0].descriptor[0].quadrature,
-          data.get_mapping_info().face_data[0].descriptor[0].quadrature,
-          1. / time_step,
-          factor_time);
         precondition.reinit(eigenvectors,
                             inverse_eigenvectors,
                             eigenvalues,
                             determinant(eval.inverse_jacobian(0)),
                             scaled_cell_velocity[cell] * factor_time,
                             1. / time_step);
-        local_operator.transform_to_collocation(eval.begin_dof_values(),
-                                                local_src);
-        // gmres.solve(local_operator, local_dst, local_src, precondition);
+        for (unsigned int i = 0; i < eval.dofs_per_cell; ++i)
+          eval.begin_dof_values()[i].store(local_src.data() + i * VectorizedArray<Number>::size());
         precondition.vmult(local_dst, local_src);
-        local_operator.transform_from_collocation(local_dst,
-                                                  eval.begin_dof_values());
+        for (unsigned int i = 0; i < eval.dofs_per_cell; ++i)
+          eval.begin_dof_values()[i].load(local_dst.data() + i * VectorizedArray<Number>::size());
         eval.set_dof_values(dst);
       }
     computing_times[3] += timer.wall_time();
