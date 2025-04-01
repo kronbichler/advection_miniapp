@@ -163,10 +163,14 @@ namespace DGAdvection
       const double factor = std::cos(numbers::PI * time / FINAL_TIME) * 2.;
       Tensor<1, dim, Number> result;
 
+      result[0] = 1.1 * factor;
+      result[1] = 0.4 * factor;
+      /*
       result[0] = factor * std::sin(2 * numbers::PI * p[1]) *
                   std::sin(numbers::PI * p[0]) * std::sin(numbers::PI * p[0]);
       result[1] = -factor * std::sin(2 * numbers::PI * p[0]) *
                   std::sin(numbers::PI * p[1]) * std::sin(numbers::PI * p[1]);
+      */
       return result;
     }
 
@@ -821,7 +825,7 @@ namespace DGAdvection
                 cell->neighbor(0)->get_dof_indices(cell_indices_n);
                 for (unsigned int i = 0; i < n; ++i)
                   for (unsigned int j = 0; j < n; ++j)
-                    deriv_matrix(cell_indices[i], cell_indices_n[j]) +=
+                    deriv_matrix(cell_indices[i], cell_indices_n[j]) -=
                       fe_1d.shape_value(i, Point<1>(0.0)) *
                       fe_1d.shape_value(j, Point<1>(1.0)) *
                       (0.5 + flux_alpha * 0.4999999999 * sign_advection);
@@ -831,7 +835,7 @@ namespace DGAdvection
                 cell->neighbor(1)->get_dof_indices(cell_indices_n);
                 for (unsigned int i = 0; i < n; ++i)
                   for (unsigned int j = 0; j < n; ++j)
-                    deriv_matrix(cell_indices[i], cell_indices_n[j]) -=
+                    deriv_matrix(cell_indices[i], cell_indices_n[j]) +=
                       fe_1d.shape_value(i, Point<1>(1.0)) *
                       fe_1d.shape_value(j, Point<1>(0.0)) *
                       (0.5 - flux_alpha * 0.4999999999 * sign_advection);
@@ -912,7 +916,8 @@ namespace DGAdvection
       FEValues<dim> fe_values(mapping,
                               dof_handler.get_fe(),
                               Quadrature<dim>(quadrature),
-                              update_quadrature_points | update_JxW_values | update_inverse_jacobians);
+                              update_quadrature_points | update_JxW_values |
+                                update_inverse_jacobians);
       for (const auto &cell : dof_handler.active_cell_iterators())
         {
           typename Triangulation<dim>::cell_iterator cell_mod = cell;
@@ -942,9 +947,12 @@ namespace DGAdvection
                       for (const unsigned int q :
                            fe_values.quadrature_point_indices())
                         {
-                          cell_velocity += Tensor<2, dim>(fe_values.inverse_jacobian(q).transpose()) * transport_speed.value(
-                                             fe_values.quadrature_point(q)) *
-                                           fe_values.JxW(q);
+                          cell_velocity +=
+                            Tensor<2, dim>(
+                              fe_values.inverse_jacobian(q).transpose()) *
+                            transport_speed.value(
+                              fe_values.quadrature_point(q)) *
+                            fe_values.JxW(q);
                           patch_volume += fe_values.JxW(q);
                         }
                       cell_0->get_dof_indices(dof_indices);
