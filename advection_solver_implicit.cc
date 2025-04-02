@@ -46,6 +46,7 @@
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/solver_idr.h>
 #include <deal.II/lac/sparse_matrix.h>
+#include <deal.II/lac/sparse_matrix_tools.h>
 
 #include <deal.II/matrix_free/fe_evaluation.h>
 #include <deal.II/matrix_free/matrix_free.h>
@@ -75,7 +76,7 @@ namespace DGAdvection
   // (around 30), depending on the dimension and the mesh size
   const unsigned int fe_degree = 5;
 
-  const unsigned int cells_per_patch_1d = 1;
+  const unsigned int cells_per_patch_1d = 2;
 
   // The time step size is controlled via this parameter as
   // dt = courant_number * min_h / transport_norm
@@ -774,7 +775,7 @@ namespace DGAdvection
     }
 
     Triangulation<1> tria;
-    GridGenerator::subdivided_hyper_cube(tria, cells_per_patch_1d, 0, 1);
+    GridGenerator::subdivided_hyper_cube(tria, cells_per_patch_1d, 0, cells_per_patch_1d);
 
     QGauss<1>     gauss_quad(dof_handler.get_fe().degree + 1);
     FE_DGQ<1>     fe_1d(dof_handler.get_fe().degree);
@@ -847,10 +848,10 @@ namespace DGAdvection
         mass_matrix.invert();
         mass_matrix.mmult(transport_matrix, deriv_matrix);
 
-        // std::cout << "Derivative: " << std::endl;
-        // deriv_matrix.print_formatted(std::cout);
-        // std::cout << "Matrix for fdm: " << std::endl;
-        // transport_matrix.print_formatted(std::cout, 6, true, 12, "0");
+        std::cout << "Derivative: " << std::endl;
+        deriv_matrix.print_formatted(std::cout);
+        std::cout << "Matrix for fdm: " << std::endl;
+        transport_matrix.print_formatted(std::cout, 6, true, 12, "0");
 
         transport_matrix.compute_eigenvalues(true, false);
 
@@ -969,7 +970,7 @@ namespace DGAdvection
             }
 
           patch_velocities.push_back(cell_velocity / patch_volume);
-          patch_volumes.push_back(1. / patch_volume);
+          patch_volumes.push_back(Utilities::pow(cells_per_patch_1d, dim) / patch_volume);
         }
     }
   }
@@ -1209,6 +1210,97 @@ namespace DGAdvection
   };
 
 
+  template <int dim, int fe_degree>
+  class InverseMatrixOperatorBJ
+  {
+  public:
+    InverseMatrixOperatorBJ(const AdvectionOperation<dim, fe_degree> &op)
+      : op(op)
+    {
+      reinit();
+    }
+
+    void
+    reinit()
+    {
+      const auto     &dof_handler = op.get_matrix_free().get_dof_handler();
+      {
+        DynamicSparsityPattern csp(dof_handler.n_dofs(), dof_handler.n_dofs());
+        DoFTools::make_flux_sparsity_pattern(dof_handler, csp);
+        sparsity.copy_from(csp);
+      }
+      spm.reinit(sparsity);
+      op.compute_matrix(spm);
+
+      dof_indices_of_cells.clear();
+      dof_indices_of_cells.reserve(dof_handler.get_triangulation().n_active_cells());
+      std::vector<types::global_dof_index> dof_ind;
+      for (const auto &cell : dof_handler.active_cell_iterators())
+        if (cell->is_locally_owned())
+          {
+            dof_ind.resize(cell->get_fe().dofs_per_cell);
+            cell->get_dof_indices(dof_ind);
+            if (cell == cell->parent()->child(0))
+              dof_indices_of_cells.emplace_back();
+            dof_indices_of_cells.back().insert(dof_indices_of_cells.back().end(),
+                                               dof_ind.begin(),
+                                               dof_ind.end());
+          }
+      cell_matrices.clear();
+      SparseMatrixTools::restrict_to_full_matrices(spm,
+                                                   spm.get_sparsity_pattern(),
+                                                   dof_indices_of_cells,
+                                                   cell_matrices);
+
+      
+      for (auto &mat : cell_matrices)
+        {
+          //std::cout << "Matrix i " << std::endl;
+          //mat.print_formatted(std::cout);
+          mat.gauss_jordan();
+          //std::cout << "factorized: " << std::endl;
+          //mat.print_formatted(std::cout);
+        }      
+    }
+
+    void
+    vmult(LinearAlgebra::distributed::Vector<double>       &dst,
+          const LinearAlgebra::distributed::Vector<double> &src) const
+    {
+      Vector<double> cell_src(cell_matrices[0].m()), cell_dst(cell_src.size());
+      for (unsigned int cell = 0; cell < cell_matrices.size(); ++cell)
+        {
+          for (unsigned int i = 0; i < cell_dst.size(); ++i)
+            cell_src[i] = src(dof_indices_of_cells[cell][i]);
+          cell_matrices[cell].vmult(cell_dst, cell_src);
+          for (unsigned int i = 0; i < cell_dst.size(); ++i)
+            dst(dof_indices_of_cells[cell][i]) = cell_dst[i];
+        }
+    }
+
+    const SparseMatrix<double> &
+    get_matrix() const
+    {
+      return spm;
+    }
+
+    void
+    set_time_step(const double time_step)
+    {
+      this->time_step = time_step;
+      reinit();
+    }
+
+  private:
+    const AdvectionOperation<dim, fe_degree> &op;
+    SparsityPattern sparsity;
+    SparseMatrix<double> spm;
+
+    std::vector<std::vector<types::global_dof_index>> dof_indices_of_cells;
+    std::vector<FullMatrix<double>>                   cell_matrices;
+  };
+
+
 
   template <int dim, typename Number = double>
   class DiagonallyImplicitRungeKuttaIntegrator
@@ -1314,7 +1406,7 @@ namespace DGAdvection
       unsigned int       first_implicit_stage = 0;
       const double       gamma                = A(n_stages - 1, n_stages - 1);
 
-      BlockJacobi<AdvectionOperation<dim, fe_degree>> preconditioner(op);
+      //BlockJacobi<AdvectionOperation<dim, fe_degree>> preconditioner(op);
 
       if (A(0, 0) == 0.0)
         {
@@ -1343,12 +1435,20 @@ namespace DGAdvection
           op.vmult(tmp, tmp2);
           op.set_time(time + c[stage] * time_step, gamma * time_step);
 
-          SolverControl control(1000, tmp.l2_norm() * 1e-9);
+          InverseMatrixOperatorBJ<dim, fe_degree> preconditioner(op);
+          SolverControl control(100, tmp.l2_norm() * 1e-9);
           using SolverType =
-            SolverFGMRES<LinearAlgebra::distributed::Vector<Number>>;
+            SolverGMRES<LinearAlgebra::distributed::Vector<Number>>;
           typename SolverType::AdditionalData gmres_data;
           gmres_data.max_basis_size = 20;
+          gmres_data.right_preconditioning = true;
           SolverType solver(control, gmres_data);
+          solver.connect_eigenvalues_slot([](const std::vector<std::complex<double>> &eigvals){
+            std::cout << "GMRES eigenvalues:" << std::endl;
+            for (const auto a: eigvals)
+             std::cout << a << " ";
+            std::cout << std::endl;
+          });
           solver.solve(op, ki[stage], tmp, preconditioner);
           n_accumulated_iterations += control.last_step();
           ++n_solutions;
@@ -1633,6 +1733,7 @@ namespace DGAdvection
 
 
 
+
   template <int dim>
   void
   AdvectionProblem<dim>::run(const unsigned int n_global_refinements)
@@ -1646,17 +1747,6 @@ namespace DGAdvection
     advection_operator.reinit(dof_handler);
     advection_operator.initialize_dof_vector(solution);
     advection_operator.project_initial(solution);
-
-    if (false && Utilities::MPI::n_mpi_processes(MPI_COMM_WORLD) == 1)
-      {
-        DynamicSparsityPattern dsp(dof_handler.n_dofs(), dof_handler.n_dofs());
-        DoFTools::make_flux_sparsity_pattern(dof_handler, dsp);
-        SparsityPattern sp;
-        sp.copy_from(dsp);
-        SparseMatrix<Number> sp_mat(sp);
-        advection_operator.compute_matrix(sp_mat);
-        std::cout << "Matrix norm: " << sp_mat.frobenius_norm() << std::endl;
-      }
 
     LinearAlgebra::distributed::Vector<Number> solution_copy = solution;
     LinearAlgebra::distributed::Vector<Number> rhs;
