@@ -314,7 +314,7 @@ namespace DGBurgers
           {
             const auto u_minus       = eval_minus.get_value(q);
             const auto u_plus        = eval_plus.get_value(q);
-            const auto normal_vector = eval_minus.get_normal_vector(q);
+            const auto normal_vector = eval_minus.normal_vector(q);
 
             const VectorizedArray<Number> u_minus_n = u_minus * normal_vector;
             const VectorizedArray<Number> u_plus_n  = u_plus * normal_vector;

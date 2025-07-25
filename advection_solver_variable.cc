@@ -531,7 +531,7 @@ namespace DGAdvection
             const auto speed   = factor_time * speeds_faces(face, q);
             const auto u_minus = eval_minus.get_value(q);
             const auto u_plus  = eval_plus.get_value(q);
-            const auto normal_vector_minus = eval_minus.get_normal_vector(q);
+            const auto normal_vector_minus = eval_minus.normal_vector(q);
 
             const auto normal_times_speed = speed * normal_vector_minus;
             const auto flux_times_normal_of_minus =
@@ -587,7 +587,7 @@ namespace DGAdvection
             const auto speed = factor_time * speeds_faces(face, q);
             // Dirichlet boundary
             const auto u_minus       = eval_minus.get_value(q);
-            const auto normal_vector = eval_minus.get_normal_vector(q);
+            const auto normal_vector = eval_minus.normal_vector(q);
 
             // Compute the outer solution value
             const auto u_plus = solution.value(eval_minus.quadrature_point(q));

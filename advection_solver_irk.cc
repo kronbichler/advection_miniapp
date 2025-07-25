@@ -1759,7 +1759,7 @@ namespace DGAdvection
             const auto speed               = speeds_faces(face, q);
             const auto u_minus             = eval_minus.get_value(q);
             const auto u_plus              = eval_plus.get_value(q);
-            const auto normal_vector_minus = eval_minus.get_normal_vector(q);
+            const auto normal_vector_minus = eval_minus.normal_vector(q);
 
             Tensor<1, n_stages, VectorizedArray<Number>> flux_minus;
             Tensor<1, n_stages, VectorizedArray<Number>> flux_plus;
@@ -1815,7 +1815,7 @@ namespace DGAdvection
             const auto speed = speeds_faces(face, q);
             // Dirichlet boundary
             const auto u_minus       = eval_minus.get_value(q);
-            const auto normal_vector = eval_minus.get_normal_vector(q);
+            const auto normal_vector = eval_minus.normal_vector(q);
 
             // Compute the outer solution value
             Tensor<1, n_stages, VectorizedArray<Number>> flux;
@@ -1944,7 +1944,7 @@ namespace DGAdvection
             const auto speed               = speeds_faces(face, q);
             const auto u_minus             = eval_src_minus.get_value(q);
             const auto u_plus              = eval_src_plus.get_value(q);
-            const auto normal_vector_minus = eval_minus.get_normal_vector(q);
+            const auto normal_vector_minus = eval_minus.normal_vector(q);
 
             Tensor<1, n_stages, VectorizedArray<Number>> flux_minus;
             Tensor<1, n_stages, VectorizedArray<Number>> flux_plus;
@@ -2003,7 +2003,7 @@ namespace DGAdvection
             const auto speed = speeds_faces(face, q);
             // Dirichlet boundary
             const auto u_minus       = eval_src_minus.get_value(q);
-            const auto normal_vector = eval_minus.get_normal_vector(q);
+            const auto normal_vector = eval_minus.normal_vector(q);
 
             // Compute the outer solution value
             Tensor<1, n_stages, VectorizedArray<Number>> flux;
