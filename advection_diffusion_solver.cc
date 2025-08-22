@@ -86,7 +86,7 @@ namespace DGAdvection
   const double flux_alpha = 1.0;
 
   // patch size for block-jacobi preconditioner
-  constexpr unsigned int patch_size = 1;
+  constexpr unsigned int patch_size = 4;
 
   // The final simulation time
   const double FINAL_TIME = 8.0;
@@ -749,7 +749,7 @@ namespace DGAdvection
         if (false)
           {
             std::cout << "Derivative: " << std::endl;
-            deriv_matrix.print_formatted(std::cout);
+            deriv_matrix.print_formatted(std::cout, 8, true, 14, "0");
             std::cout << "Mass: " << std::endl;
             mass_matrix.print_formatted(std::cout);
           }
@@ -804,6 +804,11 @@ namespace DGAdvection
         auto cell_z = cell;
         while (!cell_z->is_active())
           cell_z = cell_z->child(0);
+
+        // skip cells not locally owned
+        if (cell_z->is_locally_owned() == false)
+          continue;
+
         for (unsigned int iz = 0; iz < (dim > 2 ? patch_size : 1); ++iz)
           {
             auto cell_y = cell_z;
