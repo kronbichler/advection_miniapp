@@ -69,21 +69,24 @@ namespace DGAdvection
   // The dimension can be selected to be 1, 2, 3 (it is a C++ template
   // argument, so different code gets compiled in 1D/2D/3D); for the advection
   // speed of a rotating vortex that is set here, only dimension 2 is allowed
-  const unsigned int dimension = 2;
+  constexpr unsigned int dimension = 2;
 
   // The polynomial degree can be selected between 0 and any reasonable number
   // (around 30), depending on the dimension and the mesh size
-  const unsigned int fe_degree = 5;
+  constexpr unsigned int fe_degree = 5;
 
   // The time step size is controlled via this parameter as
   // dt = courant_number * min_h / transport_norm
-  const double courant_number = 4;
+  constexpr double courant_number = 4;
 
   // Diffusion coefficient
-  const double diffusion = 1e-4;
+  const double           diffusion  = 1e-4;
 
   // 0: central flux, 1: classical upwind flux (= Lax-Friedrichs)
   const double flux_alpha = 1.0;
+
+  // patch size for block-jacobi preconditioner
+  constexpr unsigned int patch_size = 1;
 
   // The final simulation time
   const double FINAL_TIME = 8.0;
@@ -276,11 +279,14 @@ namespace DGAdvection
 
 
 
-  template <int dim, int fe_degree, typename Number = double>
+  template <int dim,
+            int fe_degree,
+            typename Number = double,
+            int patch_size  = 1>
   class CellwisePreconditionerFDM
   {
   public:
-    static constexpr unsigned int n = fe_degree + 1;
+    static constexpr unsigned int n = patch_size * (fe_degree + 1);
     using vcomplex                  = std::complex<VectorizedArray<Number>>;
 
     CellwisePreconditionerFDM() = default;
@@ -292,6 +298,12 @@ namespace DGAdvection
           const std::array<AlignedVector<vcomplex>, dim> &eigenvalues,
           const Number                                    inv_dt) const
     {
+      for (unsigned int d = 0; d < dim; ++d)
+        {
+          AssertDimension(eigenvalues[d].size(), n);
+          AssertDimension(inverse_eigenvectors[d].size(), n * n);
+          AssertDimension(eigenvectors[d].size(), n * n);
+        }
       // copy from real to complex vector
       for (unsigned int i = 0; i < data_array.size(); ++i)
         {
@@ -482,6 +494,9 @@ namespace DGAdvection
     std::array<AlignedVector<std::complex<VectorizedArray<Number>>>, dim>
       eigenvalues;
 
+    std::vector<std::array<unsigned int, VectorizedArray<Number>::size()>>
+      dof_indices_on_patches;
+
     void
     local_apply_domain(
       const MatrixFree<dim, Number>                    &data,
@@ -642,18 +657,20 @@ namespace DGAdvection
                 std::vector<Quadrature<1>>{{quadrature, quadrature_mass}},
                 additional_data);
 
+    constexpr unsigned int n = fe_degree + 1;
+
     QGauss<1>    gauss_quad(fe_degree + 1);
     FE_DGQ<1>    fe_1d(fe_degree);
     const double h = dof_handler.begin_active()->vertex(1)[0] -
                      dof_handler.begin_active()->vertex(0)[0];
-    constexpr unsigned int n = fe_degree + 1;
-    const Tensor<1, dim>   transport_speed =
+    const Tensor<1, dim> transport_speed =
       TransportSpeed<dim>().value(Point<dim>());
     for (unsigned int d = 0; d < dim; ++d)
       {
-        LAPACKFullMatrix<double> deriv_matrix(n, n);
-        LAPACKFullMatrix<double> mass_matrix(n, n);
+        LAPACKFullMatrix<double> deriv_matrix(patch_size * n, patch_size * n);
+        LAPACKFullMatrix<double> mass_matrix(patch_size * n, patch_size * n);
         mass_matrix.set_property(LAPACKSupport::symmetric);
+        // matrix for first element
         for (unsigned int q = 0; q < n; ++q)
           {
             for (unsigned int i = 0; i < n; ++i)
@@ -697,6 +714,38 @@ namespace DGAdvection
                   fe_1d.shape_value(j, Point<1>(1.0)) * sigma) *
                  diffusion);
 
+        // copy first matrix to possible other cells in patch; include
+        // cross-element coupling terms
+        for (unsigned int patch = 1; patch < patch_size; ++patch)
+          for (unsigned int i = 0; i < n; ++i)
+            for (unsigned int j = 0; j < n; ++j)
+              {
+                deriv_matrix(patch * n + i, patch * n + j) = deriv_matrix(i, j);
+                mass_matrix(patch * n + i, patch * n + j)  = mass_matrix(i, j);
+                deriv_matrix(patch * n + n - i - 1, patch * n - j - 1) +=
+                  (-transport_speed[d] * fe_1d.shape_value(i, Point<1>(1.0)) *
+                     fe_1d.shape_value(j, Point<1>(0.0)) *
+                     (0.5 + flux_alpha * 0.5 * sign_advection) -
+                   (0.5 * fe_1d.shape_value(i, Point<1>(1.0)) *
+                      fe_1d.shape_grad(j, Point<1>(0.0))[0] / h -
+                    0.5 * fe_1d.shape_value(j, Point<1>(0.0)) *
+                      fe_1d.shape_grad(i, Point<1>(1.0))[0] / h +
+                    fe_1d.shape_value(i, Point<1>(1.0)) *
+                      fe_1d.shape_value(j, Point<1>()) * sigma) *
+                     diffusion);
+                deriv_matrix(patch * n - i - 1, patch * n + n - j - 1) +=
+                  (transport_speed[d] * fe_1d.shape_value(i, Point<1>(0.0)) *
+                     fe_1d.shape_value(j, Point<1>(1.0)) *
+                     (0.5 - flux_alpha * 0.5 * sign_advection) +
+                   (0.5 * fe_1d.shape_value(i, Point<1>(0.0)) *
+                      fe_1d.shape_grad(j, Point<1>(1.0))[0] / h -
+                    0.5 * fe_1d.shape_value(j, Point<1>(1.0)) *
+                      fe_1d.shape_grad(i, Point<1>(0.0))[0] / h -
+                    fe_1d.shape_value(i, Point<1>(0.0)) *
+                      fe_1d.shape_value(j, Point<1>(1.0)) * sigma) *
+                     diffusion);
+              }
+
         if (false)
           {
             std::cout << "Derivative: " << std::endl;
@@ -709,27 +758,110 @@ namespace DGAdvection
         mass_matrix.solve(deriv_matrix);
         deriv_matrix.compute_eigenvalues(true, false);
 
-        eigenvalues[d].resize(n);
-        for (unsigned int i = 0; i < n; ++i)
+        const unsigned int m = n * patch_size;
+        eigenvalues[d].resize(m);
+        for (unsigned int i = 0; i < m; ++i)
           eigenvalues[d][i] = deriv_matrix.eigenvalue(i);
 
-        eigenvectors[d].resize(n * n);
+        eigenvectors[d].resize(m * m);
         auto eigvecs = deriv_matrix.get_right_eigenvectors();
-        for (unsigned int i = 0; i < n; ++i)
-          for (unsigned int j = 0; j < n; ++j)
-            eigenvectors[d][i * n + j] = eigvecs(i, j);
+        for (unsigned int i = 0; i < m; ++i)
+          for (unsigned int j = 0; j < m; ++j)
+            eigenvectors[d][i * m + j] = eigvecs(i, j);
         eigvecs.gauss_jordan();
-        inverse_eigenvectors[d].resize(n * n);
+        inverse_eigenvectors[d].resize(m * m);
         mass_matrix.invert();
-        for (unsigned int i = 0; i < n; ++i)
-          for (unsigned int j = 0; j < n; ++j)
+        for (unsigned int i = 0; i < m; ++i)
+          for (unsigned int j = 0; j < m; ++j)
             {
               std::complex<double> sum = 0;
-              for (unsigned int k = 0; k < n; ++k)
+              for (unsigned int k = 0; k < m; ++k)
                 sum += eigvecs(i, k) * mass_matrix(k, j);
-              inverse_eigenvectors[d][i * n + j] = sum;
+              inverse_eigenvectors[d][i * m + j] = sum;
             }
       }
+
+    // build the patches and get respective dof indices. Note that we need to
+    // make sure that we get a valid setup
+    const double patch_log = std::log2(patch_size);
+    AssertThrow(patch_log - static_cast<int>(patch_log) < 1e-12,
+                ExcMessage(
+                  "Patch size " + std::to_string(patch_size) +
+                  " does not seem to be a power of 2, which is invalid!"));
+    const unsigned int level_patch =
+      dof_handler.get_triangulation().n_levels() - 1 -
+      static_cast<int>(patch_log);
+    Table<2, unsigned int> dofs_on_patch(
+      dof_handler.get_triangulation().n_cells(level_patch),
+      Utilities::pow(patch_size, dim));
+    unsigned int                         patch_count = 0;
+    std::vector<types::global_dof_index> dof_indices(
+      dof_handler.get_fe().dofs_per_cell);
+    const auto endc = dof_handler.end(level_patch);
+    for (auto cell = dof_handler.begin(level_patch); cell != endc; ++cell)
+      {
+        // build the patch
+        auto cell_z = cell;
+        while (!cell_z->is_active())
+          cell_z = cell_z->child(0);
+        for (unsigned int iz = 0; iz < (dim > 2 ? patch_size : 1); ++iz)
+          {
+            auto cell_y = cell_z;
+            for (unsigned int iy = 0; iy < (dim > 1 ? patch_size : 1); ++iy)
+              {
+                auto cell_x = cell_y;
+                for (unsigned int ix = 0; ix < patch_size; ++ix)
+                  {
+                    AssertThrow(
+                      cell_x->level() ==
+                        static_cast<int>(
+                          dof_handler.get_triangulation().n_levels()) -
+                          1,
+                      ExcInternalError());
+                    AssertThrow(cell_x->is_active() &&
+                                  cell_x->is_locally_owned(),
+                                ExcMessage(
+                                  "Cell is not active or not locally owned, "
+                                  "setup of patch failed. Is processor count "
+                                  "not leading to cube/rectangular domain "
+                                  "decomposition?"));
+                    cell_x->get_dof_indices(dof_indices);
+                    dofs_on_patch(patch_count,
+                                  (iz * patch_size + iy) * patch_size + ix) =
+                      dof_handler.locally_owned_dofs().index_within_set(
+                        dof_indices[0]);
+                    if (cell_x->at_boundary(1) == false)
+                      cell_x = cell_x->neighbor(1);
+                    else
+                      Assert(ix == patch_size - 1, ExcInternalError());
+                  }
+                if (dim > 1 && cell_y->at_boundary(3) == false)
+                  cell_y = cell_y->neighbor(3);
+                else
+                  Assert(dim == 1 || iy == patch_size - 1, ExcInternalError());
+              }
+            if (dim > 2 && cell_z->at_boundary(5) == false)
+              cell_z = cell_z->neighbor(5);
+            else
+              Assert(dim < 3 || iz == patch_size - 1, ExcInternalError());
+          }
+        ++patch_count;
+      }
+
+    // gather indices in vectorized format
+    constexpr unsigned int n_lanes = VectorizedArray<Number>::size();
+    AssertThrow(patch_count % n_lanes == 0,
+                ExcMessage("Patches need to be vectorizable"));
+    AssertThrow(patch_count * Utilities::pow(patch_size, dim) ==
+                  data.n_cell_batches() * n_lanes,
+                ExcInternalError());
+    dof_indices_on_patches.resize(patch_count / n_lanes *
+                                  Utilities::pow(patch_size, dim));
+    for (unsigned int i = 0; i < patch_count / n_lanes; ++i)
+      for (unsigned int j = 0; j < dofs_on_patch.size(1); ++j)
+        for (unsigned int v = 0; v < n_lanes; ++v)
+          dof_indices_on_patches[i * dofs_on_patch.size(1) + j][v] =
+            dofs_on_patch(i * n_lanes + v, j);
   }
 
 
@@ -890,13 +1022,92 @@ namespace DGAdvection
   {
     Timer timer;
 
-    FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> eval(data);
-    Vector<double> local_src(eval.dofs_per_cell *
-                             VectorizedArray<Number>::size());
-    Vector<double> local_dst(local_src);
+    CellwisePreconditionerFDM<dim, fe_degree, Number, patch_size> precondition;
 
-    CellwisePreconditionerFDM<dim, fe_degree> precondition;
-
+    constexpr unsigned int cells_per_patch = Utilities::pow(patch_size, dim);
+    constexpr unsigned int dofs_per_cell   = Utilities::pow(fe_degree + 1, dim);
+    AssertDimension(precondition.n, patch_size * (fe_degree + 1));
+    const unsigned int     n_patches =
+      dof_indices_on_patches.size() / cells_per_patch;
+    std::array<VectorizedArray<Number>, cells_per_patch * dofs_per_cell>
+                                                       patch_values;
+    std::array<VectorizedArray<Number>, dofs_per_cell> cell_values;
+    for (unsigned int patch = 0; patch < n_patches; ++patch)
+      {
+        for (unsigned int iz = 0, p = 0; iz < (dim > 2 ? patch_size : 1); ++iz)
+          for (unsigned int iy = 0; iy < (dim > 1 ? patch_size : 1); ++iy)
+            for (unsigned int ix = 0; ix < patch_size; ++ix, ++p)
+              {
+                vectorized_load_and_transpose(
+                  dofs_per_cell,
+                  src.begin(),
+                  dof_indices_on_patches[patch * cells_per_patch + p].data(),
+                  cell_values.data());
+                // sort into lexicographic format
+                const unsigned int stride       = fe_degree + 1;
+                const unsigned int stride_patch = patch_size * stride;
+                if (dim == 3)
+                  for (unsigned int jz = 0; jz < stride; ++jz)
+                    for (unsigned int jy = 0; jy < stride; ++jy)
+                      {
+                        const unsigned int ip =
+                          (iz * stride + jz) * stride_patch * stride_patch +
+                          (iy * stride + jy) * stride_patch + ix * stride;
+                        const unsigned int ic = (jz * stride + jy) * stride;
+                        for (unsigned int jx = 0; jx < stride; ++jx)
+                          patch_values[ip + jx] = cell_values[ic + jx];
+                      }
+                else
+                  for (unsigned int jy = 0; jy < stride; ++jy)
+                    {
+                      const unsigned int ip =
+                        (iy * stride + jy) * stride_patch + ix * stride;
+                      const unsigned int ic = jy * stride;
+                      for (unsigned int jx = 0; jx < stride; ++jx)
+                        patch_values[ip + jx] = cell_values[ic + jx];
+                    }
+              }
+        precondition.vmult(patch_values.data(),
+                           eigenvectors,
+                           inverse_eigenvectors,
+                           eigenvalues,
+                           1. / time_step);
+        for (unsigned int iz = 0, p = 0; iz < (dim > 2 ? patch_size : 1); ++iz)
+          for (unsigned int iy = 0; iy < (dim > 1 ? patch_size : 1); ++iy)
+            for (unsigned int ix = 0; ix < patch_size; ++ix, ++p)
+              {
+                // extract into lexicographic format
+                const unsigned int stride       = fe_degree + 1;
+                const unsigned int stride_patch = patch_size * stride;
+                if (dim == 3)
+                  for (unsigned int jz = 0; jz < stride; ++jz)
+                    for (unsigned int jy = 0; jy < stride; ++jy)
+                      {
+                        const unsigned int ip =
+                          (iz * stride + jz) * stride_patch * stride_patch +
+                          (iy * stride + jy) * stride_patch + ix * stride;
+                        const unsigned int ic = (jz * stride + jy) * stride;
+                        for (unsigned int jx = 0; jx < stride; ++jx)
+                          cell_values[ic + jx] = patch_values[ip + jx];
+                      }
+                else
+                  for (unsigned int jy = 0; jy < stride; ++jy)
+                    {
+                      const unsigned int ip =
+                        (iy * stride + jy) * stride_patch + ix * stride;
+                      const unsigned int ic = jy * stride;
+                      for (unsigned int jx = 0; jx < stride; ++jx)
+                        cell_values[ic + jx] = patch_values[ip + jx];
+                    }
+                vectorized_transpose_and_store(
+                  false,
+                  dofs_per_cell,
+                  cell_values.data(),
+                  dof_indices_on_patches[patch * cells_per_patch + p].data(),
+                  dst.begin());
+              }
+      }
+    /*
     for (unsigned int cell = 0; cell < data.n_cell_batches(); ++cell)
       {
         eval.reinit(cell);
@@ -908,6 +1119,7 @@ namespace DGAdvection
                            1. / time_step);
         eval.set_dof_values(dst);
       }
+    */
     computing_times[3] += timer.wall_time();
   }
 
