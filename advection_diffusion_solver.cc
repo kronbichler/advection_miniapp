@@ -80,7 +80,7 @@ namespace DGAdvection
   constexpr double courant_number = 4;
 
   // Diffusion coefficient
-  const double           diffusion  = 1e-4;
+  const double diffusion = 1e-4;
 
   // 0: central flux, 1: classical upwind flux (= Lax-Friedrichs)
   const double flux_alpha = 1.0;
@@ -433,8 +433,8 @@ namespace DGAdvection
                 dst,
                 src,
                 true,
-                MatrixFree<dim, Number>::DataAccessOnFaces::values,
-                MatrixFree<dim, Number>::DataAccessOnFaces::values);
+                MatrixFree<dim, Number>::DataAccessOnFaces::gradients,
+                MatrixFree<dim, Number>::DataAccessOnFaces::gradients);
       computing_times[0] += time.wall_time();
       ++computing_times[2];
     }
@@ -659,10 +659,12 @@ namespace DGAdvection
 
     constexpr unsigned int n = fe_degree + 1;
 
-    QGauss<1>    gauss_quad(fe_degree + 1);
-    FE_DGQ<1>    fe_1d(fe_degree);
-    const double h = dof_handler.begin_active()->vertex(1)[0] -
-                     dof_handler.begin_active()->vertex(0)[0];
+    QGauss<1> gauss_quad(fe_degree + 1);
+    FE_DGQ<1> fe_1d(fe_degree);
+    // the last cell is always on the finest level, also with MPI when the
+    // first active cell might be an artificial one
+    const double h = dof_handler.get_triangulation().last()->vertex(1)[0] -
+                     dof_handler.get_triangulation().last()->vertex(0)[0];
     const Tensor<1, dim> transport_speed =
       TransportSpeed<dim>().value(Point<dim>());
     for (unsigned int d = 0; d < dim; ++d)
@@ -1032,7 +1034,7 @@ namespace DGAdvection
     constexpr unsigned int cells_per_patch = Utilities::pow(patch_size, dim);
     constexpr unsigned int dofs_per_cell   = Utilities::pow(fe_degree + 1, dim);
     AssertDimension(precondition.n, patch_size * (fe_degree + 1));
-    const unsigned int     n_patches =
+    const unsigned int n_patches =
       dof_indices_on_patches.size() / cells_per_patch;
     std::array<VectorizedArray<Number>, cells_per_patch * dofs_per_cell>
                                                        patch_values;
