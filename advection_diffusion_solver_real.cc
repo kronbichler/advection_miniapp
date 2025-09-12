@@ -292,7 +292,7 @@ namespace DGAdvection
     eigenvalues.resize(A.n());
     eigenvectors.reinit(A.n(), A.n());
     std::vector<unsigned int> real_eigenvalue_indices;
-    unsigned int j                     = 0;
+    unsigned int              j = 0;
     for (unsigned int i = 0; i < A.n();)
       if (i + 1 < A.n() && std::abs(A.eigenvalue(i).imag()) > 1e-12)
         {
@@ -371,8 +371,12 @@ namespace DGAdvection
           AssertDimension(eigenvectors[d].size(), n * n);
         }
 
-      using Eval = internal::
-        EvaluatorTensorProduct<internal::evaluate_general, dim, n, n, VectorizedArray<Number>, Number>;
+      using Eval = internal::EvaluatorTensorProduct<internal::evaluate_general,
+                                                    dim,
+                                                    n,
+                                                    n,
+                                                    VectorizedArray<Number>,
+                                                    Number>;
       // apply V M^{-1}
       Eval::template apply<0, false, false>(inverse_eigenvectors[0].data(),
                                             in_out_array,
@@ -392,8 +396,8 @@ namespace DGAdvection
       dealii::ndarray<vcomplex, dim, n_half> tmp_eig;
       for (unsigned int i0 = 0; i0 < n / 2; ++i0)
         for (unsigned int d = 0; d < dim; ++d)
-          tmp_eig[d][i0] = vcomplex(eigenvalues[d][2 * i0],
-                                    eigenvalues[d][2 * i0 + 1]);
+          tmp_eig[d][i0] =
+            vcomplex(eigenvalues[d][2 * i0], eigenvalues[d][2 * i0 + 1]);
       if constexpr (n % 2 == 1)
         {
           for (unsigned int d = 0; d < dim; ++d)
@@ -421,32 +425,35 @@ namespace DGAdvection
                 const vcomplex val0 =
                   tmp_eig[0][i0] + make_vectorized_array<Number>(inv_dt);
                 const vcomplex val1 = conj(val0);
-                std::array<vcomplex, Utilities::pow(2, dim)> inverse_eigenvalues;
+                std::array<vcomplex, Utilities::pow(2, dim)>
+                  inverse_eigenvalues;
                 for (unsigned int d = 0; d < Utilities::pow(2, dim - 1); ++d)
                   {
                     inverse_eigenvalues[2 * d] =
-                      VectorizedArray<Number>(Utilities::fixed_power<dim>(0.5)) /
+                      VectorizedArray<Number>(
+                        Utilities::fixed_power<dim>(0.5)) /
                       (val0 + diagonal_element_yz[d]);
                     inverse_eigenvalues[2 * d + 1] =
-                      VectorizedArray<Number>(Utilities::fixed_power<dim>(0.5)) /
+                      VectorizedArray<Number>(
+                        Utilities::fixed_power<dim>(0.5)) /
                       (val1 + diagonal_element_yz[d]);
                   }
-              const unsigned int i = 2 * ((i2 * n + i1) * n + i0);
-              const std::array<unsigned int, n_pairs> &my_offsets =
-                offsets[n % 2 == 0 || i2 + 1 < n_half]
-                       [n % 2 == 0 || i1 + 1 < n_half]
-                       [n % 2 == 0 || i0 + 1 < n_half];
-              std::array<vcomplex, n_pairs> data_i;
-              for (unsigned int d = 0; d < n_pairs; ++d)
-                {
-                  const unsigned int j = my_offsets[d] + i;
-                  AssertIndexRange(j, Utilities::pow(n, dim));
-                  data_i[d] = vcomplex(in_out_array[j], -in_out_array[j]);
-                }
-              apply_complex_inverse(data_i, inverse_eigenvalues);
-              for (unsigned int d = 0; d < n_pairs; ++d)
-                in_out_array[my_offsets[d] + i] = data_i[d].real();
-            }
+                const unsigned int i = 2 * ((i2 * n + i1) * n + i0);
+                const std::array<unsigned int, n_pairs> &my_offsets =
+                  offsets[n % 2 == 0 || i2 + 1 < n_half]
+                         [n % 2 == 0 || i1 + 1 < n_half]
+                         [n % 2 == 0 || i0 + 1 < n_half];
+                std::array<vcomplex, n_pairs> data_i;
+                for (unsigned int d = 0; d < n_pairs; ++d)
+                  {
+                    const unsigned int j = my_offsets[d] + i;
+                    AssertIndexRange(j, Utilities::pow(n, dim));
+                    data_i[d] = vcomplex(in_out_array[j], -in_out_array[j]);
+                  }
+                apply_complex_inverse(data_i, inverse_eigenvalues);
+                for (unsigned int d = 0; d < n_pairs; ++d)
+                  in_out_array[my_offsets[d] + i] = data_i[d].real();
+              }
           }
 
       // apply V^{-1}
@@ -666,11 +673,9 @@ namespace DGAdvection
 
     mutable std::vector<double> computing_times;
 
-    std::array<AlignedVector<Number>, dim>
-      eigenvectors, inverse_eigenvectors;
-    std::array<AlignedVector<Number>, dim>
-      eigenvalues;
-    std::array<unsigned int, dim> n_real_eigenvalues;
+    std::array<AlignedVector<Number>, dim> eigenvectors, inverse_eigenvectors;
+    std::array<AlignedVector<Number>, dim> eigenvalues;
+    std::array<unsigned int, dim>          n_real_eigenvalues;
 
     std::vector<std::array<unsigned int, VectorizedArray<Number>::size()>>
       dof_indices_on_patches;
