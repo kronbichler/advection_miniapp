@@ -1008,7 +1008,7 @@ namespace DGAdvection
               data_array[s].data(),
               data_array[s].data());
 
-          constexpr int n_half = (n + 1) / 2;
+          constexpr int      n_half  = (n + 1) / 2;
           constexpr int      n_pairs = Utilities::pow(2, dim);
           const unsigned int s_plus  = 2 * s + 1 < n_stages ? 1 : 0;
 
@@ -2819,7 +2819,8 @@ namespace DGAdvection
 
     pcout << std::endl
           << "   Performed " << timestep_number << " time steps with "
-          << static_cast<double>(it_count) / timestep_number << " iterations / step" << std::endl;
+          << static_cast<double>(it_count) / timestep_number
+          << " iterations / step" << std::endl;
 
     pcout << "   Average wall clock time per time step: "
           << (prep_time + sol_time) / timestep_number << "s, time per element: "
