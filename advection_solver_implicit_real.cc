@@ -6,7 +6,7 @@
 // implicit backward Euler/diagonally implicit Runge-Kutta time integration
 // with local solvers
 // Author: Martin Kronbichler, Technical University of Munich,
-// University of Augsburg, Ruhr University Bochum, 2014-2025
+// University of Augsburg, Ruhr University Bochum, 2014-2026
 //
 // This program shares many similarities with the step-67 tutorial program of
 // deal.II, see https://dealii.org/developer/doxygen/deal.II/step_67.html ,

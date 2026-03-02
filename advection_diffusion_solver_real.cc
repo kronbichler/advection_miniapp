@@ -4,7 +4,8 @@
 
 // Program for time integration of the advection problem, realizing an
 // implicit backward Euler integration with local solvers
-// Author: Martin Kronbichler, Technical University of Munich, 2014-2022
+// Author: Martin Kronbichler, Technical University of Munich,
+// University of Augsburg, Ruhr University Bochum, 2014-2026
 //
 // This program shares many similarities with the step-67 tutorial program of
 // deal.II, see https://dealii.org/developer/doxygen/deal.II/step_67.html ,
@@ -73,14 +74,14 @@ namespace DGAdvection
 
   // The polynomial degree can be selected between 0 and any reasonable number
   // (around 30), depending on the dimension and the mesh size
-  constexpr unsigned int fe_degree = 5;
+  constexpr unsigned int fe_degree = 6;
 
   // The time step size is controlled via this parameter as
   // dt = courant_number * min_h / transport_norm
-  constexpr double courant_number = 4;
+  constexpr double courant_number = 2;
 
   // Diffusion coefficient
-  const double diffusion = 1e-5;
+  const double diffusion = 1e-4;
 
   // 0: central flux, 1: classical upwind flux (= Lax-Friedrichs)
   const double flux_alpha = 1.0;
@@ -89,7 +90,7 @@ namespace DGAdvection
   constexpr unsigned int patch_size = 1;
 
   // The final simulation time
-  const double FINAL_TIME = 8.0;
+  const double FINAL_TIME = 2.0;
 
   // Frequency of output
   const double output_tick = 0.1;
@@ -127,33 +128,6 @@ namespace DGAdvection
 
 
 
-  // Analytical solution of the problem
-  template <int dim>
-  class ExactSolution : public Function<dim>
-  {
-  public:
-    ExactSolution(const double time = 0.)
-      : Function<dim>(1, time)
-    {}
-
-    virtual double
-    value(const Point<dim> &p,
-          const unsigned int /*component*/ = 0) const override
-    {
-      return value<double>(p);
-    }
-
-    template <typename Number>
-    Number
-    value(const Point<dim, Number> &p) const
-    {
-      return std::exp(
-        -400. * ((p[0] - 0.5) * (p[0] - 0.5) + (p[1] - 0.75) * (p[1] - 0.75)));
-    }
-  };
-
-
-
   template <int dim>
   class TransportSpeed
   {
@@ -177,6 +151,44 @@ namespace DGAdvection
 
   private:
     const double time;
+  };
+
+  // Analytical solution of the problem
+  template <int dim>
+  class ExactSolution : public Function<dim>
+  {
+  public:
+    ExactSolution(const double time = 0.)
+      : Function<dim>(1, time)
+    {}
+
+    virtual double
+    value(const Point<dim> &p,
+          const unsigned int /*component*/ = 0) const override
+    {
+      return value<double>(p);
+    }
+
+    template <typename Number>
+    Number
+    value(const Point<dim, Number> &p) const
+    {
+      const double                 high    = 11.;
+      const double                 factorh = 0.1;
+      const double                 t       = this->get_time();
+      const Tensor<1, dim, Number> a       = TransportSpeed<dim>(t).value(p);
+      const double                 two_pi  = 2. * numbers::PI;
+      const double exp_l = std::exp(-diffusion * two_pi * two_pi * t);
+      const double exp_h =
+        std::exp(-diffusion * two_pi * two_pi * t * high * high) * factorh;
+      Number val = 0;
+      for (unsigned int d = 0; d < dim; ++d)
+        val +=
+          std::sin(two_pi * (p[d] - a[d] * t)) * exp_l +
+          std::sin(high * two_pi * (p[d] - 0.17 + 1. / 43. * d - a[d] * t)) *
+            exp_h;
+      return val;
+    }
   };
 
 
@@ -326,9 +338,10 @@ namespace DGAdvection
           eigenvectors(k, j) = eig_vectors(k, i).real();
         ++j;
       }
-    AssertDimension(j, A.n());
+    AssertThrow(j == A.n(), ExcDimensionMismatch(j, A.n()));
 
-    return real_eigenvalue_indices.size();
+    // complex eigenvalues come in complex-conjugate pairs
+    return (A.n() - real_eigenvalue_indices.size()) / 2;
   }
 
 
@@ -340,8 +353,8 @@ namespace DGAdvection
   class CellwisePreconditionerFDM
   {
   public:
-    static constexpr unsigned int n = patch_size * (fe_degree + 1);
-    using vcomplex                  = std::complex<VectorizedArray<Number>>;
+    static constexpr int n = patch_size * (fe_degree + 1);
+    using vcomplex         = std::complex<VectorizedArray<Number>>;
 
     CellwisePreconditionerFDM()
     {
@@ -360,12 +373,11 @@ namespace DGAdvection
           const std::array<AlignedVector<Number>, dim> &eigenvectors,
           const std::array<AlignedVector<Number>, dim> &inverse_eigenvectors,
           const std::array<AlignedVector<Number>, dim> &eigenvalues,
-          const std::array<unsigned int, dim>          &n_real_eigenvalues,
+          const std::array<int, dim>                   &n_complex_eigenvalues,
           const Number                                  inv_dt) const
     {
       for (unsigned int d = 0; d < dim; ++d)
         {
-          AssertThrow(n_real_eigenvalues[d] <= 1, ExcNotImplemented());
           AssertDimension(eigenvalues[d].size(), n);
           AssertDimension(inverse_eigenvectors[d].size(), n * n);
           AssertDimension(eigenvectors[d].size(), n * n);
@@ -390,22 +402,27 @@ namespace DGAdvection
                                               in_out_array,
                                               in_out_array);
 
-      constexpr int n_half  = (n + 1) / 2;
       constexpr int n_pairs = Utilities::pow(2, dim);
 
-      dealii::ndarray<vcomplex, dim, n_half> tmp_eig;
-      for (unsigned int i0 = 0; i0 < n / 2; ++i0)
-        for (unsigned int d = 0; d < dim; ++d)
-          tmp_eig[d][i0] =
-            vcomplex(eigenvalues[d][2 * i0], eigenvalues[d][2 * i0 + 1]);
-      if constexpr (n % 2 == 1)
+      // Complex eigenvalues are stored in pairs of real and imaginary parts
+      std::array<int, 3> n_eigenvalues{{1, 1, 1}};
+      for (unsigned int d = 0; d < dim; ++d)
+        n_eigenvalues[d] = n - n_complex_eigenvalues[d];
+
+      dealii::ndarray<vcomplex, dim, n> tmp_eig;
+      for (unsigned int d = 0; d < dim; ++d)
         {
-          for (unsigned int d = 0; d < dim; ++d)
-            tmp_eig[d][n_half - 1] = eigenvalues[d][n - 1];
+          for (int i0 = 0; i0 < n_complex_eigenvalues[d]; ++i0)
+            tmp_eig[d][i0] =
+              vcomplex(eigenvalues[d][2 * i0], eigenvalues[d][2 * i0 + 1]);
+          for (int i0 = n_complex_eigenvalues[d], i = 2 * i0; i < n; ++i0, ++i)
+            tmp_eig[d][i0] = eigenvalues[d][i];
         }
 
-      for (unsigned int i2 = 0, c = 0; i2 < (dim > 2 ? n_half : 1); ++i2)
-        for (unsigned int i1 = 0; i1 < (dim > 1 ? n_half : 1); ++i1)
+      for (int i2 = 0, j2 = 0; i2 < n_eigenvalues[2];
+           j2 += (dim > 2 && i2 < n_complex_eigenvalues[2] ? 2 : 1), ++i2)
+        for (int i1 = 0, j1 = 0; i1 < n_eigenvalues[1];
+             j1 += (i1 < n_complex_eigenvalues[1] ? 2 : 1), ++i1)
           {
             std::array<vcomplex, 4> diagonal_element_yz;
             if constexpr (dim == 2)
@@ -420,7 +437,12 @@ namespace DGAdvection
                 diagonal_element_yz[2] = conj(diagonal_element_yz[1]);
                 diagonal_element_yz[3] = conj(diagonal_element_yz[0]);
               }
-            for (unsigned int i0 = 0; i0 < n_half; ++i0, ++c)
+            const auto &offsets_xy =
+              offsets[(dim == 2 || i2 >= n_complex_eigenvalues[2] ? 0 : 1)]
+                     [i1 >= n_complex_eigenvalues[1] ? 0 : 1];
+            const int i_xy = (j2 * n + j1) * n;
+            for (int i0 = 0, j0 = 0; i0 < n_eigenvalues[0];
+                 j0 += (i0 < n_complex_eigenvalues[0] ? 2 : 1), ++i0)
               {
                 const vcomplex val0 =
                   tmp_eig[0][i0] + make_vectorized_array<Number>(inv_dt);
@@ -438,11 +460,9 @@ namespace DGAdvection
                         Utilities::fixed_power<dim>(0.5)) /
                       (val1 + diagonal_element_yz[d]);
                   }
-                const unsigned int i = 2 * ((i2 * n + i1) * n + i0);
+                const unsigned int                       i = i_xy + j0;
                 const std::array<unsigned int, n_pairs> &my_offsets =
-                  offsets[n % 2 == 0 || i2 + 1 < n_half]
-                         [n % 2 == 0 || i1 + 1 < n_half]
-                         [n % 2 == 0 || i0 + 1 < n_half];
+                  offsets_xy[i0 >= n_complex_eigenvalues[0] ? 0 : 1];
                 std::array<vcomplex, n_pairs> data_i;
                 for (unsigned int d = 0; d < n_pairs; ++d)
                   {
@@ -675,7 +695,7 @@ namespace DGAdvection
 
     std::array<AlignedVector<Number>, dim> eigenvectors, inverse_eigenvectors;
     std::array<AlignedVector<Number>, dim> eigenvalues;
-    std::array<unsigned int, dim>          n_real_eigenvalues;
+    std::array<int, dim>                   n_complex_eigenvalues;
 
     std::vector<std::array<unsigned int, VectorizedArray<Number>::size()>>
       dof_indices_on_patches;
@@ -943,7 +963,7 @@ namespace DGAdvection
         mass_matrix.solve(deriv_matrix);
 
         FullMatrix<double> eigvecs;
-        n_real_eigenvalues[d] =
+        n_complex_eigenvalues[d] =
           extract_real_eigenvalues(deriv_matrix, eigenvalues[d], eigvecs);
 
         const unsigned int m = n * patch_size;
@@ -1259,7 +1279,7 @@ namespace DGAdvection
                            eigenvectors,
                            inverse_eigenvectors,
                            eigenvalues,
-                           n_real_eigenvalues,
+                           n_complex_eigenvalues,
                            1. / time_step);
         for (unsigned int iz = 0, p = 0; iz < (dim > 2 ? patch_size : 1); ++iz)
           for (unsigned int iy = 0; iy < (dim > 1 ? patch_size : 1); ++iy)
@@ -1661,11 +1681,39 @@ namespace DGAdvection
   AdvectionProblem<dim>::output_results(const unsigned int output_number,
                                         const Tensor<1, 3> mass_energy)
   {
-    pcout << "   Time " << std::left << std::setw(6) << std::setprecision(3)
-          << time << "  mass " << std::setprecision(10) << std::setw(16)
-          << mass_energy[0] << "  energy " << std::setprecision(10)
-          << std::setw(16) << mass_energy[1] << "  H1-semi "
-          << std::setprecision(4) << std::setw(6) << mass_energy[2];
+    Vector<double> norm_per_cell(triangulation->n_active_cells());
+
+    LinearAlgebra::distributed::Vector<Number> zero_vector;
+    zero_vector.reinit(solution);
+    VectorTools::integrate_difference(mapping,
+                                      dof_handler,
+                                      zero_vector,
+                                      ExactSolution<dim>(time),
+                                      norm_per_cell,
+                                      QGauss<dim>(fe.degree + 1),
+                                      VectorTools::L2_norm);
+    double solution_mag =
+      VectorTools::compute_global_error(*triangulation,
+                                        norm_per_cell,
+                                        VectorTools::L2_norm);
+
+    VectorTools::integrate_difference(mapping,
+                                      dof_handler,
+                                      solution,
+                                      ExactSolution<dim>(time),
+                                      norm_per_cell,
+                                      QGauss<dim>(fe.degree + 2),
+                                      VectorTools::L2_norm);
+    double error = VectorTools::compute_global_error(*triangulation,
+                                                     norm_per_cell,
+                                                     VectorTools::L2_norm);
+    pcout << "   Time" << std::setw(8) << std::setprecision(3) << time
+          << "  error " << std::setprecision(5) << std::setw(10)
+          << error / solution_mag << "  mass " << std::setprecision(10)
+          << std::setw(16) << mass_energy[0] << "  energy "
+          << std::setprecision(10) << std::setw(16) << mass_energy[1]
+          << "  H1-semi " << std::setprecision(4) << std::setw(9)
+          << mass_energy[2];
 
     if (!print_vtu)
       return;
@@ -1678,6 +1726,11 @@ namespace DGAdvection
 
     data_out.attach_dof_handler(dof_handler);
     data_out.add_data_vector(solution, "solution");
+    VectorTools::interpolate(mapping,
+                             dof_handler,
+                             ExactSolution<dim>(time),
+                             zero_vector);
+    data_out.add_data_vector(zero_vector, "analytical");
     data_out.build_patches(mapping,
                            fe_degree,
                            DataOut<dim>::curved_inner_cells);
@@ -1757,11 +1810,6 @@ namespace DGAdvection
           }
         output_time += timer.wall_time();
       }
-
-    solution_copy -= solution;
-    pcout << std::endl
-          << "   Distance |final solution - initial_condition|: "
-          << solution_copy.linfty_norm() << std::endl;
 
     pcout << std::endl
           << "   Performed " << timestep_number << " time steps." << std::endl;
