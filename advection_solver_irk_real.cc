@@ -2538,12 +2538,12 @@ namespace DGAdvection
 
         advection_operator.compute_rhs(rhs, solution);
 
-        const unsigned int n_max_steps =
-          timestep_number > n_vectors ? n_vectors : timestep_number - 1;
-
         // if we determined previously to make an update
         if (refresh_projection)
           {
+            const unsigned int n_max_steps =
+              timestep_number > n_vectors ? n_vectors : timestep_number - 1;
+
             unsigned int step = 0;
             for (; step < n_max_steps; ++step)
               advection_operator.vmult(stage_mv[step], stage_sol[step]);

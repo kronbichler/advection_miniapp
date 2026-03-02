@@ -618,7 +618,7 @@ namespace DGAdvection
                 const vcomplex val0 =
                   tmp_eig[0][i0] + make_vectorized_array<Number>(inv_dt);
                 const vcomplex val1 = conj(val0);
-                for (unsigned int d = 0; d < dim; ++d)
+                for (unsigned int d = 0; d < Utilities::pow(2, dim - 1); ++d)
                   {
                     inverse_eigenvalues_for_cell[c][2 * d] =
                       Utilities::fixed_power<dim>(0.5) *
